@@ -51,10 +51,6 @@ export function fmtBytes(n) {
   return (n / 1024 / 1024).toFixed(1) + ' MB';
 }
 
-/** Email 轉成資料庫可用的 key（. 不能當 key，換成 ,） */
-export const emailKey = email => String(email || '').trim().toLowerCase().replace(/\./g, ',');
-export const keyToEmail = key => String(key || '').replace(/,/g, '.');
-
 export function debounce(fn, ms) {
   let t;
   const d = (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };

@@ -18,7 +18,11 @@
 <div class="shell" id="app">
   <div class="sheet">
     <header class="topbar">
-      <button type="button" class="who" id="btn-who" aria-haspopup="dialog"><span class="who-label">編輯者：</span><span class="who-name muted">…</span></button>
+      <label class="who" for="who-name">
+        <span class="who-label">編輯者：</span>
+        <input type="text" id="who-name" class="who-input" size="10" maxlength="20" placeholder="輸入你的名字" autocomplete="nickname" enterkeyhint="done">
+        <span class="who-chips" id="who-chips"></span>
+      </label>
       <button type="button" class="btn" id="btn-new" hidden>新增表單</button>
       <button type="button" class="btn" id="btn-rating">戰力評分方式</button>
       <form class="search" id="search-form" role="search">

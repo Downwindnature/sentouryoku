@@ -16,9 +16,12 @@ const SORTS = [
   ['name', '名字']
 ];
 
+const NAME_MAX = 20;
+
 const S = {
   adapter: null, store: null,
-  user: null, role: 'guest', ownerExists: true, publicRead: true, locked: false,
+  editorName: String(ls.get('pr-editor-name', '') || '').trim().slice(0, NAME_MAX),
+  writeError: null, locked: false,
   pages: [], pagesLoaded: false, pid: ls.get('pr-current-page'),
   entries: [], entriesLoaded: false,
   search: '', sort: ls.get('pr-sort', 'created'), listPage: 1,
@@ -26,21 +29,50 @@ const S = {
 };
 if (!SORTS.some(([k]) => k === S.sort)) S.sort = 'created';
 
-const canEdit = () => S.role === 'owner' || S.role === 'editor';
+// 任何人都可以看、也可以編輯；「編輯者」只是自己輸入的名字，用來記錄是誰改的
+const canEdit = () => !!S.store && !S.fatal;
+const me = () => ({ name: S.editorName });
 let OPEN = null; // 目前開著的名單視窗（用來即時更新）
 
-const GOOGLE_G = '<svg class="i" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.23c0-.68-.06-1.36-.18-2.02H12v3.83h5.4a4.62 4.62 0 0 1-2 3.03v2.5h3.24c1.9-1.75 2.96-4.33 2.96-7.34z"/><path fill="#34A853" d="M12 22c2.7 0 4.98-.9 6.64-2.43l-3.24-2.51c-.9.61-2.05.96-3.4.96-2.6 0-4.82-1.76-5.6-4.13H3.06v2.59A10 10 0 0 0 12 22z"/><path fill="#FBBC05" d="M6.4 13.89a6 6 0 0 1 0-3.78V7.52H3.06a10 10 0 0 0 0 8.96z"/><path fill="#EA4335" d="M12 5.98c1.47 0 2.79.5 3.83 1.5l2.87-2.87A9.62 9.62 0 0 0 12 2a10 10 0 0 0-8.94 5.52L6.4 10.1C7.18 7.74 9.4 5.98 12 5.98z"/></svg>';
-
-const AUTH_ERRORS = {
-  'auth/unauthorized-domain': () => `這個網址還沒加入 Firebase 的「已授權網域」。請到 Firebase 主控台 → Authentication → 設定 → 已授權網域，加入「${location.hostname}」。`,
-  'auth/operation-not-allowed': () => 'Firebase 還沒啟用 Google 登入。請到 Firebase 主控台 → Authentication → 登入方式，啟用「Google」。',
-  'auth/popup-blocked': () => '登入視窗被瀏覽器擋住了，請允許這個網站開啟彈出式視窗，再按一次登入。',
-  'auth/network-request-failed': () => '網路連線失敗，請確認網路之後再試一次。',
-  'auth/web-storage-unsupported': () => '這個瀏覽器封鎖了網站儲存空間，無法登入。請改用 Chrome 或 Safari。',
-  'auth/internal-error': () => '登入時發生錯誤。如果是從 LINE、Facebook 等 App 裡開啟網址，請改用 Chrome 或 Safari 開啟。',
-  'auth/configuration-not-found': () => 'Firebase 還沒啟用 Authentication。請到 Firebase 主控台 → Authentication → 開始使用，並啟用「Google」登入。',
-  'auth/invalid-api-key': () => 'js/config.js 裡的 apiKey 不正確，請重新從 Firebase 主控台複製。'
+const WRITE_ERRORS = {
+  'auth/operation-not-allowed': '編輯功能還沒開啟：請到 Firebase 主控台 → Authentication → 登入方式，啟用「匿名」。',
+  'auth/admin-restricted-operation': '編輯功能還沒開啟：請到 Firebase 主控台 → Authentication → 登入方式，啟用「匿名」。',
+  'auth/configuration-not-found': 'Firebase 還沒啟用 Authentication：請到 Firebase 主控台 → Authentication → 開始使用，然後在登入方式啟用「匿名」。',
+  'auth/network-request-failed': '網路連線失敗，請確認網路之後再試一次。',
+  'auth/invalid-api-key': 'js/config.js 裡的 apiKey 不正確，請重新從 Firebase 主控台複製。',
+  'auth/api-key-not-valid.-please-pass-a-valid-api-key.': 'js/config.js 裡的 apiKey 不正確，請重新從 Firebase 主控台複製。'
 };
+
+function writeErrorText(e) {
+  const code = (e && e.code) || '';
+  if (WRITE_ERRORS[code]) return WRITE_ERRORS[code];
+  if (isPermissionError(e)) return '資料庫拒絕寫入。請確認 Firebase 的 Realtime Database「規則」已經換成 database.rules.json 的內容並按了「發布」，而且 Authentication 已經啟用「匿名」登入。';
+  return (e && e.message) || String(e);
+}
+
+function reportWriteError(e, prefix) {
+  alertBox(writeErrorText(e), { title: prefix });
+}
+
+/** 編輯前確認有填名字；沒填就先跳出輸入框 */
+async function ensureName() {
+  if (S.editorName) return true;
+  const name = await promptBox({
+    title: '先輸入你的名字', label: '名字會顯示在「上次更新時間」和過往紀錄裡，讓大家知道是誰改的。',
+    placeholder: '你的名字', maxLength: NAME_MAX, okText: '確定',
+    validate: v => (v ? '' : '請輸入名字')
+  });
+  if (!name) return false;
+  setEditorName(name);
+  return true;
+}
+
+function setEditorName(name) {
+  S.editorName = String(name || '').trim().slice(0, NAME_MAX);
+  const input = $('#who-name');
+  if (input && input.value.trim() !== S.editorName) input.value = S.editorName;
+  ls.set('pr-editor-name', S.editorName);
+}
 
 // ---------------------------------------------------------------------------
 // 啟動
@@ -61,11 +93,13 @@ async function boot() {
   } catch (e) {
     const msg = String(e && e.message || e);
     S.fatal = /databaseURL/.test(msg) ? msg : `無法載入 Firebase：${msg}\n請確認網路連線，並檢查 js/config.js 的設定是否完整。`;
-    renderList();
+    renderChrome();
     return;
   }
   S.store = createStore(S.adapter);
   document.documentElement.dataset.mode = S.adapter.mode;
+  renderWho();
+  renderChrome();
 
   let offlineTimer = null;
   S.adapter.onConnection(on => {
@@ -73,25 +107,12 @@ async function boot() {
     if (on) { S.online = true; renderWho(); }
     else offlineTimer = setTimeout(() => { S.online = false; renderWho(); }, 3000);
   });
-  S.store.watchPublicRead(v => { S.publicRead = v; renderList(); });
-  S.adapter.onAuth(onAuth);
+  // 背景完成匿名登入；失敗時大家還是可以瀏覽，只是不能存檔
+  S.adapter.ready().catch(e => {
+    S.writeError = e;
+    toast('目前只能瀏覽，不能存檔：' + writeErrorText(e), 'warn', 9000);
+  });
   subscribePages();
-}
-
-async function onAuth(user) {
-  S.user = user;
-  let r = { role: user ? 'viewer' : 'guest', ownerExists: true };
-  try { r = await S.store.resolveRole(user); } catch (e) { console.warn(e); }
-  S.role = r.role;
-  S.ownerExists = r.ownerExists;
-  renderWho();
-  renderChrome();
-  subscribePages();
-  subscribeEntries(true);
-  if (user && !r.ownerExists && S.adapter.mode === 'firebase' && !S.claimAsked) {
-    S.claimAsked = true;
-    offerClaim();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -151,10 +172,17 @@ function switchPage(pid) {
 // 固定的畫面元件
 // ---------------------------------------------------------------------------
 function bindStatic() {
-  $('#btn-who').addEventListener('click', openWhoMenu);
-  $('#btn-new').addEventListener('click', () => {
-    if (!S.pid) { if (canEdit()) toast('請先按左下角的 + 新增一個分頁', 'warn'); return; }
-    if (requireEditor()) openEntry({ mode: 'edit' });
+  // 編輯者：直接輸入名字（存在這台裝置，下次打開還在）
+  const nameInput = $('#who-name');
+  nameInput.value = S.editorName;
+  const saveName = debounce(() => ls.set('pr-editor-name', S.editorName), 300);
+  nameInput.addEventListener('input', () => { S.editorName = nameInput.value.trim().slice(0, NAME_MAX); saveName(); });
+  nameInput.addEventListener('change', () => setEditorName(nameInput.value));
+  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); nameInput.blur(); } });
+
+  $('#btn-new').addEventListener('click', async () => {
+    if (!S.pid) { toast('請先按左下角的 + 新增一個分頁', 'warn'); return; }
+    if (await ensureName()) openEntry({ mode: 'edit' });
   });
   $('#btn-rating').addEventListener('click', openRating);
 
@@ -179,7 +207,6 @@ function bindStatic() {
   $('#btn-add-page').addEventListener('click', addPage);
   bindTabs();
   renderWho();
-  renderChrome();
 }
 
 function scrollListTop() { const l = $('#list'); if (l) l.scrollTop = 0; }
@@ -191,21 +218,14 @@ function renderSortSelect() {
 }
 
 function renderWho() {
-  const b = $('#btn-who');
-  if (!b) return;
-  const demo = S.adapter && S.adapter.mode === 'local';
-  const kids = [h('span', { class: 'who-label', text: '編輯者：' })];
-  if (S.user) {
-    kids.push(h('span', { class: 'who-name', text: S.user.name }));
-    if (demo) kids.push(h('span', { class: 'chip', text: '示範模式' }));
-    else if (S.role === 'viewer') kids.push(h('span', { class: 'chip', text: '僅檢視' }));
-  } else {
-    kids.push(h('span', { class: 'who-name muted', text: '未登入' }));
-    kids.push(h('span', { class: 'chip chip-cta', text: demo ? '訪客檢視' : '登入' }));
+  const chips = $('#who-chips');
+  if (!chips) return;
+  const kids = [];
+  if (S.adapter && S.adapter.mode === 'local') {
+    kids.push(h('span', { class: 'chip', text: '示範模式', title: '資料只存在這台電腦的瀏覽器裡。在 js/config.js 填好 Firebase 設定後，大家就會看到同一份資料。' }));
   }
   if (!S.online) kids.push(h('span', { class: 'chip chip-warn', html: icon('wifiOff') + '<span>離線</span>' }));
-  b.replaceChildren(...kids);
-  b.setAttribute('aria-label', S.user ? `編輯者：${S.user.name}，開啟帳號選單` : '尚未登入，開啟登入選單');
+  chips.replaceChildren(...kids);
 }
 
 function renderChrome() {
@@ -272,7 +292,7 @@ function bindTabs() {
 }
 
 async function addPage() {
-  if (!requireEditor()) return;
+  if (!(await ensureName())) return;
   const name = await promptBox({
     title: '新增分頁', label: '分頁名稱', value: `分頁 ${S.pages.length + 1}`, maxLength: 40, okText: '新增',
     validate: v => (!v ? '請輸入分頁名稱' : (S.pages.some(p => p.name === v) ? '已經有同名的分頁了' : '')),
@@ -284,7 +304,7 @@ async function addPage() {
   });
   if (!name) return;
   try {
-    const pid = await S.store.createPage(name, S.user, S.pages);
+    const pid = await S.store.createPage(name, me(), S.pages);
     S.pid = null;
     switchPage(pid);
     toast(`已新增分頁「${name}」`);
@@ -328,6 +348,7 @@ async function downloadBackup(page) {
 }
 
 async function renamePage(page) {
+  if (!(await ensureName())) return;
   const name = await promptBox({
     title: '重新命名分頁', label: '分頁名稱', value: page.name, maxLength: 40, okText: '儲存',
     validate: v => (!v ? '請輸入分頁名稱' : (S.pages.some(p => p.name === v && p.id !== page.id) ? '已經有同名的分頁了' : ''))
@@ -338,6 +359,7 @@ async function renamePage(page) {
 }
 
 async function deletePage(page) {
+  if (!(await ensureName())) return;
   let n = 0;
   try { n = await S.store.countEntries(page.id); } catch (e) { reportWriteError(e, '讀取失敗'); return; }
   if (n > 0) {
@@ -355,8 +377,8 @@ async function deletePage(page) {
   }
 }
 
-function importBackup() {
-  if (!requireEditor()) return;
+async function importBackup() {
+  if (!(await ensureName())) return;
   const input = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
   document.body.append(input);
   input.addEventListener('change', async () => {
@@ -372,7 +394,7 @@ function importBackup() {
     if (!ok) return;
     const busy = busyBox('匯入中…');
     try {
-      const res = await S.store.importPage(json, S.user, S.pages, (d, t) => busy.progress(d, t, '上傳媒體'));
+      const res = await S.store.importPage(json, me(), S.pages, (d, t) => busy.progress(d, t, '上傳媒體'));
       busy.close();
       S.pid = null;
       switchPage(res.pid);
@@ -436,10 +458,8 @@ function renderList() {
     showPager(false);
     return;
   }
-  const lockedView = S.locked || (S.publicRead === false && !canEdit());
-  if (lockedView) {
-    const act = !S.user ? h('button', { type: 'button', class: 'btn primary', html: GOOGLE_G + '<span>登入編輯者帳號</span>', onClick: signIn }) : null;
-    list.replaceChildren(stateBox('lock', '這份戰力名單目前不公開', S.user ? '你的帳號沒有檢視權限，請聯絡擁有者。' : '只有編輯者登入後才能看到內容。', act));
+  if (S.locked) {
+    list.replaceChildren(stateBox('lock', '無法讀取資料', 'Firebase 的資料庫規則不允許讀取。\n請到 Realtime Database → 規則，貼上 database.rules.json 的內容並按「發布」。'));
     showPager(false);
     return;
   }
@@ -449,7 +469,7 @@ function renderList() {
     return;
   }
   if (!S.pages.length) {
-    list.replaceChildren(stateBox('plus', '還沒有任何分頁', canEdit() ? '按左下角的「+」新增第一個分頁，再用「新增表單」加入名單。' : (S.user ? '請等編輯者新增分頁。' : '還沒有內容。編輯者請先點左上角「編輯者」登入。')));
+    list.replaceChildren(stateBox('plus', '還沒有任何分頁', '按左下角的「+」新增第一個分頁，再用「新增表單」加入名單。'));
     showPager(false);
     return;
   }
@@ -556,7 +576,7 @@ function cardFor(e) {
     });
     pinBtn.addEventListener('click', () => togglePin(e, pinBtn));
     const editBtn = h('button', { type: 'button', class: 'btn sm', text: '編輯' });
-    editBtn.addEventListener('click', () => openEntry({ eid: e.id, mode: 'edit' }));
+    editBtn.addEventListener('click', async () => { if (await ensureName()) openEntry({ eid: e.id, mode: 'edit' }); });
     const delBtn = h('button', { type: 'button', class: 'btn sm danger-text', text: '刪除' });
     delBtn.addEventListener('click', () => deleteEntry(e));
     actions = h('div', { class: 'c-actions' }, pinBtn, editBtn, delBtn);
@@ -570,7 +590,8 @@ function cardFor(e) {
     h('div', { class: 'c-head' },
       h('div', { class: 'c-power' }, h('span', { class: 'lbl', text: '戰力：' }), stampEl(e.power)),
       actions,
-      h('div', { class: 'c-time' }, h('span', { class: 'lbl', text: '上次更新時間:' }), h('time', { text: fmtTime(e.updatedAt || e.createdAt) }))),
+      h('div', { class: 'c-time' }, h('span', { class: 'lbl', text: '上次更新時間:' }), h('time', { text: fmtTime(e.updatedAt || e.createdAt) }),
+        e.updatedBy ? h('span', { class: 'c-by', text: `（${e.updatedBy}）` }) : null)),
     content);
   cardCache.set(e.id, { sig, el });
   if (cardCache.size > 300) cardCache.delete(cardCache.keys().next().value);
@@ -579,7 +600,7 @@ function cardFor(e) {
 
 /** 置頂 / 取消置頂（不算修改內容，不會改到上次更新時間） */
 async function togglePin(e, btn) {
-  if (!requireEditor()) return;
+  if (!(await ensureName())) return;
   const pin = !e.pinnedAt;
   btn.disabled = true;
   // 等置頂狀態真的更新後，再跳到那筆名單所在的頁面
@@ -597,7 +618,7 @@ async function togglePin(e, btn) {
 }
 
 async function deleteEntry(e) {
-  if (!requireEditor()) return;
+  if (!(await ensureName())) return;
   const ok = await confirmBox(`確定要刪除「${e.name}」嗎？\n這筆名單的內容和過往紀錄會一起刪除，無法復原。`, { title: '刪除名單', danger: true });
   if (!ok) return;
   const busy = busyBox('刪除中…');
@@ -611,7 +632,6 @@ async function deleteEntry(e) {
 // ---------------------------------------------------------------------------
 function openEntry({ eid = null, mode = 'view' } = {}) {
   if (!S.pid) return;
-  if (mode === 'edit' && !requireEditor()) return;
   if (OPEN) OPEN.close();
   const store = S.store;
   const M = {
@@ -738,7 +758,7 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
     }
     const right = editing
       ? [btn('套用', () => save(false)), btn('確定', () => save(true), 'primary'), btn('取消', requestClose)]
-      : [canEdit() ? btn('編輯', () => { M.mode = 'edit'; M.prevMode = 'edit'; render(); setTimeout(() => nameInput.focus(), 30); }, '', 'edit') : null, btn('關閉', requestClose)];
+      : [canEdit() ? btn('編輯', async () => { if (!(await ensureName())) return; M.mode = 'edit'; M.prevMode = 'edit'; render(); setTimeout(() => nameInput.focus(), 30); }, '', 'edit') : null, btn('關閉', requestClose)];
     foot.replaceChildren(h('div', { class: 'f-left' }, left), h('div', { class: 'f-right' }, right));
   }
 
@@ -802,6 +822,13 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
     const name = nameInput.value.trim();
     const power = powerInput.value.trim();
     if (!name) { await alertBox('請先填寫名字。'); nameInput.focus(); return; }
+    if (M.editor.jobs) {
+      M.saving = true;
+      const wait = busyBox('圖片處理中，處理完就會存檔…');
+      await M.editor.whenIdle();
+      wait.close();
+      M.saving = false;
+    }
     const html = M.editor.getHtml();
     const same = !M.isNew && M.entry && html === (M.entry.html || '') && name === M.entry.name &&
       power === (M.entry.power || '') && (M.avatar || null) === (M.entry.avatar || null);
@@ -819,7 +846,7 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
       try {
         saved = await store.saveEntry({
           pid: M.pid, eid: M.eid, data: { name, power, avatar: M.avatar, html },
-          baseUpdatedAt: M.isNew ? null : M.base, force, pending, user: S.user,
+          baseUpdatedAt: M.isNew ? null : M.base, force, pending, user: me(),
           onProgress: (d, t) => busy.progress(d, t, '上傳媒體')
         });
         break;
@@ -938,8 +965,8 @@ async function openRating() {
     }
   }
 
-  function startEdit() {
-    if (!requireEditor()) return;
+  async function startEdit() {
+    if (!(await ensureName())) return;
     editor = new RichEditor({ store: S.store, scope: rateScope(pid), settings, placeholder: '寫下你的戰力評分方式，例如分數怎麼算、各等級代表什麼…', onChange: () => { dirty = true; } });
     editor.setHtml(rec ? rec.html : '');
     mode = 'edit';
@@ -958,12 +985,19 @@ async function openRating() {
 
   async function save() {
     if (saving) return;
+    if (editor.jobs) {
+      saving = true;
+      const wait = busyBox('圖片處理中，處理完就會存檔…');
+      await editor.whenIdle();
+      wait.close();
+      saving = false;
+    }
     if (!dirty) { await cancelEdit(); return; }
     const html = editor.getHtml();
     saving = true;
     const b = busyBox('儲存中…');
     try {
-      rec = await S.store.saveRating({ pid, html, pending: editor.pending, user: S.user, onProgress: (d, t) => b.progress(d, t, '上傳媒體') });
+      rec = await S.store.saveRating({ pid, html, pending: editor.pending, user: me(), onProgress: (d, t) => b.progress(d, t, '上傳媒體') });
       editor.markSaved(collectRefs(html));
       editor.destroy();
       editor = null;
@@ -984,132 +1018,6 @@ async function openRating() {
   }
 
   render();
-}
-
-// ---------------------------------------------------------------------------
-// 帳號
-// ---------------------------------------------------------------------------
-async function signIn() {
-  try { await S.adapter.signIn(); }
-  catch (e) {
-    const code = (e && e.code) || '';
-    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return;
-    const f = AUTH_ERRORS[code];
-    await alertBox(f ? f() : `登入失敗：${(e && e.message) || code}`, { title: '無法登入' });
-  }
-}
-
-async function signOut() {
-  try { await S.adapter.signOut(); toast('已登出'); }
-  catch (e) { alertBox('登出失敗：' + (e.message || e)); }
-}
-
-async function offerClaim() {
-  const ok = await confirmBox(`這個網站還沒有擁有者。\n要把你（${S.user.name}）設為擁有者嗎？擁有者可以編輯所有內容，也能決定還有誰可以編輯。`, { title: '設定擁有者', yes: '設為擁有者', no: '先不要' });
-  if (!ok) return;
-  try {
-    await S.store.claimOwner(S.user.uid);
-    toast('你現在是這個網站的擁有者了');
-    await onAuth(S.user);
-  } catch (e) {
-    await alertBox(isPermissionError(e) ? '已經有人先成為擁有者了。' : '設定失敗：' + (e.message || e));
-    await onAuth(S.user);
-  }
-}
-
-function requireEditor() {
-  if (canEdit()) return true;
-  if (!S.user) {
-    confirmBox('需要登入編輯者帳號才能編輯。要現在登入嗎？', { title: '需要登入', yes: '登入', no: '先不要' }).then(ok => { if (ok) signIn(); });
-  } else {
-    alertBox('你的帳號沒有編輯權限。請擁有者把你的 Email 加入編輯者名單。');
-  }
-  return false;
-}
-
-function reportWriteError(e, prefix) {
-  if (isPermissionError(e)) {
-    alertBox(S.user ? '你的帳號沒有權限做這件事。請擁有者把你的 Email 加入編輯者名單。' : '需要登入編輯者帳號才能做這件事。', { title: prefix });
-  } else {
-    alertBox(`${prefix}：${(e && e.message) || e}`);
-  }
-}
-
-function openWhoMenu() {
-  const anchor = $('#btn-who');
-  const A = S.adapter;
-  if (!A) return;
-  const box = h('div', { class: 'who-menu' });
-  let pop = null;
-  const mk = (htmlLabel, fn, cls = '') => {
-    const b = h('button', { type: 'button', class: 'btn block ' + cls, html: htmlLabel });
-    b.addEventListener('click', () => { if (pop) pop.close(); fn(); });
-    return b;
-  };
-
-  if (A.mode === 'local') {
-    box.append(h('p', { class: 'who-note', text: '目前是「示範模式」，資料只存在這台電腦的瀏覽器裡。把 Firebase 設定填進 js/config.js 之後，就會改用 Firebase，所有人看到的會是同一份資料。' }));
-    if (S.user) box.append(mk(icon('user') + '<span>切換成訪客檢視</span>', signOut));
-    else box.append(mk(icon('edit') + '<span>切回編輯者</span>', signIn, 'primary'));
-  } else if (!S.user) {
-    box.append(h('p', { class: 'who-note', text: '目前只能瀏覽。登入編輯者帳號後，才能新增、編輯和刪除。' }));
-    box.append(mk(GOOGLE_G + '<span>使用 Google 登入</span>', signIn, 'primary'));
-  } else {
-    const roleText = { owner: '擁有者', editor: '編輯者', viewer: '僅檢視（沒有編輯權限）' }[S.role] || '';
-    box.append(h('div', { class: 'who-user' },
-      h('img', { class: 'who-photo', src: S.user.photo || DEFAULT_AVATAR, alt: '', referrerpolicy: 'no-referrer' }),
-      h('div', { class: 'who-meta' }, h('div', { class: 'who-n', text: S.user.name }), h('div', { class: 'who-e', text: S.user.email }), h('div', { class: 'who-r', text: roleText }))));
-    if (!S.ownerExists) box.append(mk(icon('check') + '<span>設為擁有者</span>', offerClaim, 'primary'));
-    else if (S.role === 'viewer') box.append(h('p', { class: 'who-note', text: '請擁有者把你的 Email 加入編輯者名單，重新整理網頁後就能編輯。' }));
-    if (S.role === 'owner') {
-      box.append(editorsSection(), publicToggle());
-    }
-    box.append(mk(icon('logout') + '<span>登出</span>', signOut));
-  }
-  pop = popover(anchor, box, { title: '編輯者', className: 'pop-who' });
-}
-
-function publicToggle() {
-  const id = 'pub-toggle';
-  const cb = h('input', { type: 'checkbox', id });
-  cb.checked = S.publicRead !== false;
-  cb.addEventListener('change', async () => {
-    try { await S.store.setPublicRead(cb.checked); toast(cb.checked ? '已設為公開：任何拿到網址的人都能看' : '已設為不公開：只有編輯者登入後能看'); }
-    catch (e) { cb.checked = !cb.checked; reportWriteError(e, '設定失敗'); }
-  });
-  return h('label', { class: 'who-toggle', for: id }, cb, h('span', {}, h('b', { text: '公開檢視' }), h('small', { text: '開啟時，沒登入的人也能看名單（不能編輯）' })));
-}
-
-function editorsSection() {
-  const list = h('ul', { class: 'ed-list' }, h('li', { class: 'muted', text: '讀取中…' }));
-  const input = h('input', { type: 'email', class: 'field-input', id: 'add-editor', placeholder: '輸入 Google 帳號 Email', autocomplete: 'off' });
-  const addBtn = h('button', { type: 'button', class: 'btn sm primary', text: '新增' });
-  const load = async () => {
-    try {
-      const emails = await S.store.listEditors();
-      list.replaceChildren(...(emails.length ? emails.map(em => {
-        const rm = h('button', { type: 'button', class: 'btn sm danger-text', text: '移除' });
-        rm.addEventListener('click', async () => {
-          if (!(await confirmBox(`把 ${em} 移出編輯者名單？`))) return;
-          try { await S.store.removeEditor(em); load(); } catch (e) { reportWriteError(e, '移除失敗'); }
-        });
-        return h('li', {}, h('span', { class: 'ed-mail', text: em }), rm);
-      }) : [h('li', { class: 'muted', text: '還沒有其他編輯者' })]));
-    } catch (e) { list.replaceChildren(h('li', { class: 'muted', text: '讀取失敗' })); }
-  };
-  const add = async () => {
-    const v = input.value.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) || /[#$[\]/]/.test(v)) { toast('請輸入正確的 Email', 'warn'); input.focus(); return; }
-    try { await S.store.addEditor(v); input.value = ''; load(); toast(`已加入 ${v}`); }
-    catch (e) { reportWriteError(e, '新增失敗'); }
-  };
-  addBtn.addEventListener('click', add);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); add(); } });
-  load();
-  return h('div', { class: 'who-editors' },
-    h('div', { class: 'who-sec', text: '編輯者名單' }),
-    h('p', { class: 'who-small', text: '名單裡的 Google 帳號登入後就能編輯。' }),
-    list, h('div', { class: 'who-add' }, input, addBtn));
 }
 
 boot();

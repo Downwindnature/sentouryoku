@@ -1,19 +1,16 @@
 // 資料層：所有讀寫都經過這裡（Firebase 與示範模式共用同一套邏輯）
 //
 // 資料結構（Realtime Database）
-//   owner                         擁有者 uid
-//   editors/{email,key}           編輯者名單（true）
-//   settings/publicRead           是否公開檢視（預設 true）
 //   pages/{pid}                   分頁 {name, order, createdAt, createdBy}
 //   ratings/{pid}                 戰力評分方式 {html, updatedAt, updatedBy}
-//   entries/{pid}/{eid}           名單 {name, power, avatar, html, createdAt, updatedAt, updatedBy}
+//   entries/{pid}/{eid}           名單 {name, power, avatar, html, createdAt, updatedAt, updatedBy, pinnedAt}
 //   history/{eid}/{hid}           過往紀錄 {name, power, avatar, html, at, by}
 //   media/{scope}/{mid}           媒體資訊 {t, m, s, c, w, h, d, at}
 //   mediaThumb/{scope}/{mid}      縮圖（data URL）
 //   mediaData/{scope}/{mid}/{i}   檔案內容（Base64 分塊）
 //   scope = 名單 id，或 r_{pid}（戰力評分方式用）
 import { settings } from './config.js';
-import { makeId, emailKey, keyToEmail, toList, orderedParts, runLimited, isId } from './util.js';
+import { makeId, toList, orderedParts, runLimited, isId } from './util.js';
 import { CHUNK, blobToBase64, chunkString, base64PartsToBlob } from './media.js';
 
 export const rateScope = pid => 'r_' + pid;
@@ -95,29 +92,6 @@ export function createStore(A) {
 
   const store = {
     adapter: A,
-
-    // ---------- 帳號與權限 ----------
-    async resolveRole(user) {
-      let owner = null;
-      try { owner = await A.get('owner'); } catch { owner = null; }
-      if (!user) return { role: 'guest', ownerExists: !!owner };
-      if (A.mode === 'local') return { role: 'owner', ownerExists: true };
-      if (owner && owner === user.uid) return { role: 'owner', ownerExists: true };
-      let isEditor = false;
-      if (user.email) {
-        try { isEditor = (await A.get('editors/' + emailKey(user.email))) === true; } catch { isEditor = false; }
-      }
-      return { role: isEditor ? 'editor' : 'viewer', ownerExists: !!owner };
-    },
-    claimOwner: uid => A.set('owner', uid),
-    async listEditors() {
-      const v = await A.get('editors');
-      return v ? Object.keys(v).filter(k => v[k] === true).map(keyToEmail).sort() : [];
-    },
-    addEditor: email => A.set('editors/' + emailKey(email), true),
-    removeEditor: email => A.remove('editors/' + emailKey(email)),
-    setPublicRead: on => A.set('settings/publicRead', !!on),
-    watchPublicRead(cb) { return A.on('settings/publicRead', v => cb(v !== false), () => cb(true)); },
 
     // ---------- 分頁 ----------
     watchPages(cb, errCb) {

@@ -1,10 +1,7 @@
 // 示範模式：用瀏覽器 IndexedDB 模擬 Firebase Realtime Database（資料只存在這台電腦）
-import { ls } from './util.js';
-
 const DB_NAME = 'power-roster-demo';
 const STORE = 'kv';
 const KEY = 'tree';
-const DEMO_USER = { uid: 'demo-owner', name: '本機使用者', email: 'demo@local', photo: '' };
 
 function openIdb() {
   return new Promise((resolve, reject) => {
@@ -61,7 +58,6 @@ export async function createLocalAdapter() {
   } catch {
     idb = null; // 無法使用 IndexedDB（例如私密瀏覽）→ 只存在記憶體
   }
-  if (!tree.owner) tree.owner = DEMO_USER.uid;
 
   let saveTimer = null;
   const persist = () => {
@@ -124,22 +120,11 @@ export async function createLocalAdapter() {
     }
   };
 
-  // ---- 登入（示範模式只有一位本機使用者）----
-  let signedIn = ls.get('pr-demo-signed-in', true) !== false;
-  const authCbs = new Set();
-  const emitAuth = () => { for (const cb of authCbs) cb(signedIn ? { ...DEMO_USER } : null); };
-
   return {
     mode: 'local',
     persistent: !!idb,
     now: () => Date.now(),
-    onAuth(cb) {
-      authCbs.add(cb);
-      setTimeout(() => cb(signedIn ? { ...DEMO_USER } : null), 0);
-      return () => authCbs.delete(cb);
-    },
-    async signIn() { signedIn = true; ls.set('pr-demo-signed-in', true); emitAuth(); },
-    async signOut() { signedIn = false; ls.set('pr-demo-signed-in', false); emitAuth(); },
+    async ready() { /* 示範模式不需要登入 */ },
     async get(path) { return clone(getAt(split(path))); },
     async set(path, value) { setAt(split(path), clone(value)); changed([split(path)]); },
     async update(path, obj) {
@@ -160,6 +145,6 @@ export async function createLocalAdapter() {
       return () => listeners.delete(l);
     },
     onConnection(cb) { setTimeout(() => cb(true), 0); return () => {}; },
-    async wipe() { tree = { owner: DEMO_USER.uid }; changed([[]]); }
+    async wipe() { tree = {}; changed([[]]); }
   };
 }

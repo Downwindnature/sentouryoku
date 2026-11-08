@@ -426,6 +426,9 @@ export class RichEditor {
     this.lastRange = null;
     this.lastFontPx = null;
     this.uid = ++editorCount;
+    this.jobs = 0;            // 正在處理中的圖片/影片數量
+    this.idleWaiters = [];
+    this.destroyed = false;
 
     try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch { /* 舊瀏覽器 */ }
 
@@ -501,7 +504,19 @@ export class RichEditor {
     for (const mid of [...this.pending.keys()]) if (refs.has(mid)) this.pending.delete(mid);
   }
 
+  /** 等所有正在處理的圖片、影片都插好（存檔前呼叫） */
+  whenIdle() {
+    return this.jobs ? new Promise(r => this.idleWaiters.push(r)) : Promise.resolve();
+  }
+
+  beginJob() { this.jobs++; }
+  endJob() {
+    this.jobs = Math.max(0, this.jobs - 1);
+    if (!this.jobs) { const w = this.idleWaiters; this.idleWaiters = []; w.forEach(f => f()); }
+  }
+
   destroy() {
+    this.destroyed = true;
     document.removeEventListener('selectionchange', this._onSel);
     if (this._ro) this._ro.disconnect();
     for (const m of this.pending.values()) if (m.url) URL.revokeObjectURL(m.url);
@@ -673,7 +688,15 @@ export class RichEditor {
 
   // ---------- 媒體 ----------
   async insertFiles(files, range) {
+    this.beginJob();
+    try {
+      await this._insertFiles(files, range);
+    } finally { this.endJob(); }
+  }
+
+  async _insertFiles(files, range) {
     for (const file of files) {
+      if (this.destroyed) return;
       const kind = kindOf(file);
       if (!kind) { toast(`不支援「${file.name}」這種檔案`, 'warn'); continue; }
       const busy = busyBox(kind === 'video' ? '正在處理影片…' : '正在處理圖片…');
@@ -694,6 +717,7 @@ export class RichEditor {
   }
 
   addMedia(m, { range = null, float = null, width = null } = {}) {
+    if (this.destroyed) return null; // 視窗已經關掉了
     const mid = makeId();
     m.url = URL.createObjectURL(m.blob);
     this.pending.set(mid, m);
@@ -943,9 +967,12 @@ export class RichEditor {
     const range = this.lastRange ? this.lastRange.cloneRange() : null;
     const canvas = await openDrawPad({ title: '手繪' });
     if (!canvas) return;
-    const media = await processCanvas(canvas, { alpha: canvas._alpha !== false });
-    media.drawing = true;
-    this.addMedia(media, { range });
+    this.beginJob();
+    try {
+      const media = await processCanvas(canvas, { alpha: canvas._alpha !== false });
+      media.drawing = true;
+      this.addMedia(media, { range });
+    } finally { this.endJob(); }
   }
 
   async annotate() {
@@ -961,7 +988,10 @@ export class RichEditor {
     }
     const canvas = await openDrawPad({ title: '在圖片上手繪', bgUrl: url });
     if (!canvas || !m.isConnected) return;
-    const media = await processCanvas(canvas, { alpha: true });
+    this.beginJob();
+    let media;
+    try { media = await processCanvas(canvas, { alpha: true }); } finally { this.endJob(); }
+    if (this.destroyed || !m.isConnected) return;
     const newMid = makeId();
     media.url = URL.createObjectURL(media.blob);
     this.pending.set(newMid, media);
