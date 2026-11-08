@@ -1,7 +1,7 @@
 // 資料層：所有讀寫都經過這裡（Firebase 與示範模式共用同一套邏輯）
 //
 // 資料結構（Realtime Database）
-//   pages/{pid}                   分頁 {name, order, createdAt, createdBy}
+//   pages/{pid}                   分頁 {name, editor, order, createdAt, createdBy}
 //   ratings/{pid}                 戰力評分方式 {html, updatedAt, updatedBy}
 //   entries/{pid}/{eid}           名單 {name, power, avatar, html, createdAt, updatedAt, updatedBy, pinnedAt}
 //   history/{eid}/{hid}           過往紀錄 {name, power, avatar, html, at, by}
@@ -97,13 +97,14 @@ export function createStore(A) {
     watchPages(cb, errCb) {
       return A.on('pages', v => cb(toList(v).sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0))), errCb);
     },
-    async createPage(name, user, pages) {
+    async createPage(name, editor, pages) {
       const id = makeId();
       const order = pages.reduce((m, p) => Math.max(m, p.order || 0), 0) + 1;
-      await A.set('pages/' + id, { name, order, createdAt: A.now(), createdBy: user ? user.name : '' });
+      await A.set('pages/' + id, { name, editor: editor || '', order, createdAt: A.now(), createdBy: editor || '' });
       return id;
     },
-    renamePage: (pid, name) => A.set(`pages/${pid}/name`, name),
+    /** 修改分頁名稱與編輯者 */
+    updatePage: (pid, { name, editor }) => A.update('pages/' + pid, { name, editor: editor || '' }),
     async countEntries(pid) {
       const v = await A.get('entries/' + pid);
       return v ? Object.keys(v).length : 0;
@@ -257,7 +258,7 @@ export function createStore(A) {
       }
       return {
         app: APP_TAG, format: FORMAT, exportedAt: A.now(),
-        page: { name: (page && page.name) || '', createdAt: (page && page.createdAt) || 0 },
+        page: { name: (page && page.name) || '', editor: (page && page.editor) || '', createdAt: (page && page.createdAt) || 0 },
         rating: rating || null, entries, history, media
       };
     },
@@ -317,7 +318,8 @@ export function createStore(A) {
       let name = str(json.page && json.page.name, 40).trim() || '匯入的分頁';
       if (pages.some(p => p.name === name)) name = (name.slice(0, 36) + '（匯入）');
       const order = pages.reduce((m, p) => Math.max(m, p.order || 0), 0) + 1;
-      await A.set('pages/' + pid, { name, order, createdAt: A.now(), createdBy: user ? user.name : '' });
+      const editor = str(json.page && json.page.editor, 20).trim() || (user ? user.name : '');
+      await A.set('pages/' + pid, { name, editor, order, createdAt: A.now(), createdBy: editor });
       return { pid, name, count: Object.keys(eidMap).length };
     }
   };

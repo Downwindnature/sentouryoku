@@ -6,7 +6,7 @@ import { createLocalAdapter } from './adapter-local.js';
 import { createStore, collectRefs, rateScope } from './store.js';
 import { RichEditor, renderRich, htmlIsEmpty } from './editor.js';
 import { processAvatar } from './media.js';
-import { openLayer, confirmBox, alertBox, promptBox, toast, busyBox, popover } from './ui.js';
+import { openLayer, confirmBox, alertBox, toast, busyBox, popover } from './ui.js';
 
 const SORTS = [
   ['created', '新增順序'],
@@ -20,7 +20,6 @@ const NAME_MAX = 20;
 
 const S = {
   adapter: null, store: null,
-  editorName: String(ls.get('pr-editor-name', '') || '').trim().slice(0, NAME_MAX),
   writeError: null, locked: false,
   pages: [], pagesLoaded: false, pid: ls.get('pr-current-page'),
   entries: [], entriesLoaded: false,
@@ -29,9 +28,11 @@ const S = {
 };
 if (!SORTS.some(([k]) => k === S.sort)) S.sort = 'created';
 
-// 任何人都可以看、也可以編輯；「編輯者」只是自己輸入的名字，用來記錄是誰改的
+// 任何人都可以看、也可以編輯；「編輯者」是每個分頁各自的名字（新增分頁時填寫）
 const canEdit = () => !!S.store && !S.fatal;
-const me = () => ({ name: S.editorName });
+const currentPage = () => S.pages.find(p => p.id === S.pid) || null;
+const me = () => ({ name: (currentPage() || {}).editor || '' });
+const lastEditor = () => String(ls.get('pr-editor-name', '') || '').trim().slice(0, NAME_MAX);
 let OPEN = null; // 目前開著的名單視窗（用來即時更新）
 
 const WRITE_ERRORS = {
@@ -54,24 +55,47 @@ function reportWriteError(e, prefix) {
   alertBox(writeErrorText(e), { title: prefix });
 }
 
-/** 編輯前確認有填名字；沒填就先跳出輸入框 */
-async function ensureName() {
-  if (S.editorName) return true;
-  const name = await promptBox({
-    title: '先輸入你的名字', label: '名字會顯示在「上次更新時間」和過往紀錄裡，讓大家知道是誰改的。',
-    placeholder: '你的名字', maxLength: NAME_MAX, okText: '確定',
-    validate: v => (v ? '' : '請輸入名字')
+/**
+ * 新增分頁／修改分頁的視窗：分頁名稱 + 編輯者
+ * 回傳 {name, editor}，按「從備份檔匯入」回傳 {import:true, editor}，取消回傳 null
+ */
+function pageFormBox({ title, name = '', editor = '', okText = '確定', withImport = false, excludeId = null }) {
+  return new Promise(resolve => {
+    const nameInput = h('input', { type: 'text', class: 'field-input', id: 'pf-name', maxlength: 40, autocomplete: 'off' });
+    nameInput.value = name;
+    const editorInput = h('input', { type: 'text', class: 'who-input', id: 'pf-editor', size: 8, maxlength: NAME_MAX, placeholder: '你的名字', autocomplete: 'nickname' });
+    editorInput.value = editor;
+    const err = h('div', { class: 'dlg-err', role: 'alert' });
+    const okBtn = h('button', { type: 'button', class: 'btn primary', text: okText });
+    const noBtn = h('button', { type: 'button', class: 'btn', text: '取消' });
+    let importBtn = null;
+    if (withImport) importBtn = h('button', { type: 'button', class: 'btn link', html: icon('upload') + '<span>從備份檔匯入…</span>' });
+    const panel = h('div', { class: 'panel dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'pf-title' },
+      h('div', { class: 'dlg-title', id: 'pf-title', text: title }),
+      h('label', { class: 'dlg-label', for: 'pf-name', text: '分頁名稱' }),
+      nameInput, err,
+      h('div', { class: 'dlg-btns pf-row' },
+        h('label', { class: 'who pf-editor', for: 'pf-editor' }, h('span', { class: 'who-label', text: '編輯者：' }), editorInput),
+        h('div', { class: 'pf-actions' }, okBtn, noBtn)),
+      importBtn ? h('div', { class: 'dlg-extra' }, importBtn) : null);
+    const layer = openLayer(panel, { className: 'layer-dialog', onRequestClose: () => done(null) });
+    function done(v) { layer.close(); resolve(v); }
+    const submit = () => {
+      const n = nameInput.value.trim();
+      const ed = editorInput.value.trim().slice(0, NAME_MAX);
+      if (!n) { err.textContent = '請輸入分頁名稱'; nameInput.focus(); return; }
+      if (S.pages.some(p => p.name === n && p.id !== excludeId)) { err.textContent = '已經有同名的分頁了'; nameInput.focus(); return; }
+      if (!ed) { err.textContent = '請輸入編輯者'; editorInput.focus(); return; }
+      done({ name: n, editor: ed });
+    };
+    okBtn.addEventListener('click', submit);
+    noBtn.addEventListener('click', () => done(null));
+    if (importBtn) importBtn.addEventListener('click', () => done({ import: true, editor: editorInput.value.trim().slice(0, NAME_MAX) }));
+    for (const inp of [nameInput, editorInput]) {
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); submit(); } });
+    }
+    requestAnimationFrame(() => { nameInput.focus(); nameInput.select(); });
   });
-  if (!name) return false;
-  setEditorName(name);
-  return true;
-}
-
-function setEditorName(name) {
-  S.editorName = String(name || '').trim().slice(0, NAME_MAX);
-  const input = $('#who-name');
-  if (input && input.value.trim() !== S.editorName) input.value = S.editorName;
-  ls.set('pr-editor-name', S.editorName);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,17 +196,9 @@ function switchPage(pid) {
 // 固定的畫面元件
 // ---------------------------------------------------------------------------
 function bindStatic() {
-  // 編輯者：直接輸入名字（存在這台裝置，下次打開還在）
-  const nameInput = $('#who-name');
-  nameInput.value = S.editorName;
-  const saveName = debounce(() => ls.set('pr-editor-name', S.editorName), 300);
-  nameInput.addEventListener('input', () => { S.editorName = nameInput.value.trim().slice(0, NAME_MAX); saveName(); });
-  nameInput.addEventListener('change', () => setEditorName(nameInput.value));
-  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); nameInput.blur(); } });
-
-  $('#btn-new').addEventListener('click', async () => {
+  $('#btn-new').addEventListener('click', () => {
     if (!S.pid) { toast('請先按左下角的 + 新增一個分頁', 'warn'); return; }
-    if (await ensureName()) openEntry({ mode: 'edit' });
+    openEntry({ mode: 'edit' });
   });
   $('#btn-rating').addEventListener('click', openRating);
 
@@ -217,9 +233,16 @@ function renderSortSelect() {
   sel.value = S.sort;
 }
 
+/** 左上角：顯示目前分頁的編輯者（只能看，要改請到分頁選單） */
 function renderWho() {
   const chips = $('#who-chips');
-  if (!chips) return;
+  const nameEl = $('#who-name');
+  if (!chips || !nameEl) return;
+  const page = currentPage();
+  const ed = page && page.editor;
+  nameEl.textContent = ed || '—';
+  nameEl.classList.toggle('muted', !ed);
+  $('#who').title = !page ? '新增分頁時填寫編輯者' : (ed ? `「${page.name}」的編輯者` : '這個分頁還沒填編輯者：點下方的分頁 →「修改名稱與編輯者」');
   const kids = [];
   if (S.adapter && S.adapter.mode === 'local') {
     kids.push(h('span', { class: 'chip', text: '示範模式', title: '資料只存在這台電腦的瀏覽器裡。在 js/config.js 填好 Firebase 設定後，大家就會看到同一份資料。' }));
@@ -253,6 +276,7 @@ function renderTabs() {
   }));
   const active = list.querySelector('.tab.on');
   if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  renderWho();
 }
 
 function bindTabs() {
@@ -292,22 +316,15 @@ function bindTabs() {
 }
 
 async function addPage() {
-  if (!(await ensureName())) return;
-  const name = await promptBox({
-    title: '新增分頁', label: '分頁名稱', value: `分頁 ${S.pages.length + 1}`, maxLength: 40, okText: '新增',
-    validate: v => (!v ? '請輸入分頁名稱' : (S.pages.some(p => p.name === v) ? '已經有同名的分頁了' : '')),
-    extra: done => {
-      const b = h('button', { type: 'button', class: 'btn link', html: icon('upload') + '<span>從備份檔匯入…</span>' });
-      b.addEventListener('click', () => { done(null); importBackup(); });
-      return b;
-    }
-  });
-  if (!name) return;
+  const res = await pageFormBox({ title: '新增分頁', name: `分頁 ${S.pages.length + 1}`, editor: lastEditor(), okText: '新增', withImport: true });
+  if (!res) return;
+  if (res.editor) ls.set('pr-editor-name', res.editor);
+  if (res.import) { importBackup(res.editor); return; }
   try {
-    const pid = await S.store.createPage(name, me(), S.pages);
+    const pid = await S.store.createPage(res.name, res.editor, S.pages);
     S.pid = null;
     switchPage(pid);
-    toast(`已新增分頁「${name}」`);
+    toast(`已新增分頁「${res.name}」`);
   } catch (e) { reportWriteError(e, '新增分頁失敗'); }
 }
 
@@ -322,7 +339,7 @@ function openTabMenu(pid, anchor) {
   };
   const pop = popover(anchor, h('div', { class: 'menu' },
     mk('download', '下載備份檔案', () => downloadBackup(page)),
-    mk('rename', '重新命名', () => renamePage(page)),
+    mk('rename', '修改名稱與編輯者', () => renamePage(page)),
     mk('trash', '刪除', () => deletePage(page), 'danger-text')
   ), { title: page.name, className: 'pop-tab' });
 }
@@ -348,18 +365,14 @@ async function downloadBackup(page) {
 }
 
 async function renamePage(page) {
-  if (!(await ensureName())) return;
-  const name = await promptBox({
-    title: '重新命名分頁', label: '分頁名稱', value: page.name, maxLength: 40, okText: '儲存',
-    validate: v => (!v ? '請輸入分頁名稱' : (S.pages.some(p => p.name === v && p.id !== page.id) ? '已經有同名的分頁了' : ''))
-  });
-  if (!name || name === page.name) return;
-  try { await S.store.renamePage(page.id, name); toast('已重新命名'); }
-  catch (e) { reportWriteError(e, '重新命名失敗'); }
+  const res = await pageFormBox({ title: '修改分頁', name: page.name, editor: page.editor || lastEditor(), okText: '儲存', excludeId: page.id });
+  if (!res || (res.name === page.name && res.editor === (page.editor || ''))) return;
+  ls.set('pr-editor-name', res.editor);
+  try { await S.store.updatePage(page.id, { name: res.name, editor: res.editor }); toast('已儲存'); }
+  catch (e) { reportWriteError(e, '修改失敗'); }
 }
 
 async function deletePage(page) {
-  if (!(await ensureName())) return;
   let n = 0;
   try { n = await S.store.countEntries(page.id); } catch (e) { reportWriteError(e, '讀取失敗'); return; }
   if (n > 0) {
@@ -377,8 +390,7 @@ async function deletePage(page) {
   }
 }
 
-async function importBackup() {
-  if (!(await ensureName())) return;
+async function importBackup(editor = '') {
   const input = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
   document.body.append(input);
   input.addEventListener('change', async () => {
@@ -394,7 +406,7 @@ async function importBackup() {
     if (!ok) return;
     const busy = busyBox('匯入中…');
     try {
-      const res = await S.store.importPage(json, me(), S.pages, (d, t) => busy.progress(d, t, '上傳媒體'));
+      const res = await S.store.importPage(json, { name: editor || lastEditor() }, S.pages, (d, t) => busy.progress(d, t, '上傳媒體'));
       busy.close();
       S.pid = null;
       switchPage(res.pid);
@@ -576,7 +588,7 @@ function cardFor(e) {
     });
     pinBtn.addEventListener('click', () => togglePin(e, pinBtn));
     const editBtn = h('button', { type: 'button', class: 'btn sm', text: '編輯' });
-    editBtn.addEventListener('click', async () => { if (await ensureName()) openEntry({ eid: e.id, mode: 'edit' }); });
+    editBtn.addEventListener('click', () => openEntry({ eid: e.id, mode: 'edit' }));
     const delBtn = h('button', { type: 'button', class: 'btn sm danger-text', text: '刪除' });
     delBtn.addEventListener('click', () => deleteEntry(e));
     actions = h('div', { class: 'c-actions' }, pinBtn, editBtn, delBtn);
@@ -590,8 +602,7 @@ function cardFor(e) {
     h('div', { class: 'c-head' },
       h('div', { class: 'c-power' }, h('span', { class: 'lbl', text: '戰力：' }), stampEl(e.power)),
       actions,
-      h('div', { class: 'c-time' }, h('span', { class: 'lbl', text: '上次更新時間:' }), h('time', { text: fmtTime(e.updatedAt || e.createdAt) }),
-        e.updatedBy ? h('span', { class: 'c-by', text: `（${e.updatedBy}）` }) : null)),
+      h('div', { class: 'c-time' }, h('span', { class: 'lbl', text: '上次更新時間:' }), h('time', { text: fmtTime(e.updatedAt || e.createdAt) }))),
     content);
   cardCache.set(e.id, { sig, el });
   if (cardCache.size > 300) cardCache.delete(cardCache.keys().next().value);
@@ -600,7 +611,6 @@ function cardFor(e) {
 
 /** 置頂 / 取消置頂（不算修改內容，不會改到上次更新時間） */
 async function togglePin(e, btn) {
-  if (!(await ensureName())) return;
   const pin = !e.pinnedAt;
   btn.disabled = true;
   // 等置頂狀態真的更新後，再跳到那筆名單所在的頁面
@@ -618,7 +628,6 @@ async function togglePin(e, btn) {
 }
 
 async function deleteEntry(e) {
-  if (!(await ensureName())) return;
   const ok = await confirmBox(`確定要刪除「${e.name}」嗎？\n這筆名單的內容和過往紀錄會一起刪除，無法復原。`, { title: '刪除名單', danger: true });
   if (!ok) return;
   const busy = busyBox('刪除中…');
@@ -752,13 +761,12 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
     if (M.isNew) left.push(h('div', { class: 'f-info' }, h('span', { text: '新增名單' })));
     else {
       left.push(h('div', { class: 'f-info' },
-        h('span', { text: '上次更新時間:' }), h('time', { text: fmtTime(M.entry.updatedAt) }),
-        M.entry.updatedBy ? h('span', { class: 'f-by', text: `（${M.entry.updatedBy}）` }) : null));
+        h('span', { text: '上次更新時間:' }), h('time', { text: fmtTime(M.entry.updatedAt) })));
       left.push(btn('翻閱過往紀錄', openHistory, 'f-hist', 'history'));
     }
     const right = editing
       ? [btn('套用', () => save(false)), btn('確定', () => save(true), 'primary'), btn('取消', requestClose)]
-      : [canEdit() ? btn('編輯', async () => { if (!(await ensureName())) return; M.mode = 'edit'; M.prevMode = 'edit'; render(); setTimeout(() => nameInput.focus(), 30); }, '', 'edit') : null, btn('關閉', requestClose)];
+      : [canEdit() ? btn('編輯', () => { M.mode = 'edit'; M.prevMode = 'edit'; render(); setTimeout(() => nameInput.focus(), 30); }, '', 'edit') : null, btn('關閉', requestClose)];
     foot.replaceChildren(h('div', { class: 'f-left' }, left), h('div', { class: 'f-right' }, right));
   }
 
@@ -799,7 +807,7 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
     const back = btn(M.prevMode === 'edit' ? '返回編輯' : '返回', () => { M.mode = M.prevMode; render(); }, 'primary');
     foot.replaceChildren(
       h('div', { class: 'f-left' },
-        h('div', { class: 'f-info' }, h('span', { text: '當時紀錄:' }), h('time', { text: fmtTime(rec.at) }), rec.by ? h('span', { class: 'f-by', text: `（${rec.by}）` }) : null),
+        h('div', { class: 'f-info' }, h('span', { text: '當時紀錄:' }), h('time', { text: fmtTime(rec.at) })),
         h('div', { class: 'f-pages', text: `頁數:${M.hIndex + 1}/${n}` })),
       h('div', { class: 'f-right' }, prev, next, restore, back));
   }
@@ -856,7 +864,7 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
           const cur = err.current;
           const msg = err.message === 'GONE'
             ? '這筆名單在你編輯的期間被刪除了。要用你現在的內容重新建立嗎？'
-            : `這筆名單在你編輯的期間，被「${(cur && cur.updatedBy) || '其他人'}」在 ${fmtTime(cur && cur.updatedAt)} 改過了。\n要用你現在的內容覆蓋嗎？（對方的版本會保留在過往紀錄裡）`;
+            : `這筆名單在你編輯的期間，已經在 ${fmtTime(cur && cur.updatedAt)} 被其他人改過了。\n要用你現在的內容覆蓋嗎？（對方的版本會保留在過往紀錄裡）`;
           if (await confirmBox(msg, { title: '有人同時在編輯' })) { force = true; busy = busyBox('儲存中…'); continue; }
           M.saving = false;
           return;
@@ -957,7 +965,7 @@ async function openRating() {
       const v = h('div', { class: 'rc full' });
       renderRich(v, rec ? rec.html : '', { store: S.store, scope: rateScope(pid), mode: 'full' });
       if (htmlIsEmpty(rec ? rec.html : '')) v.replaceChildren(h('p', { class: 'e-empty', text: canEdit() ? '還沒有寫評分方式。按左上角的「編輯」開始寫，可以打字、放圖片、GIF、影片或手繪。' : '還沒有寫評分方式。' }));
-      const meta = rec && rec.updatedAt ? h('div', { class: 'r-meta' }, h('span', { text: '上次更新時間:' }), h('time', { text: fmtTime(rec.updatedAt) }), rec.updatedBy ? h('span', { text: `（${rec.updatedBy}）` }) : null) : null;
+      const meta = rec && rec.updatedAt ? h('div', { class: 'r-meta' }, h('span', { text: '上次更新時間:' }), h('time', { text: fmtTime(rec.updatedAt) })) : null;
       body.replaceChildren(h('div', { class: 'e-view-scroll r-scroll' }, v), meta);
     } else {
       left.replaceChildren(mk('儲存', save, 'primary', 'check'), mk('取消', cancelEdit));
@@ -965,8 +973,7 @@ async function openRating() {
     }
   }
 
-  async function startEdit() {
-    if (!(await ensureName())) return;
+  function startEdit() {
     editor = new RichEditor({ store: S.store, scope: rateScope(pid), settings, placeholder: '寫下你的戰力評分方式，例如分數怎麼算、各等級代表什麼…', onChange: () => { dirty = true; } });
     editor.setHtml(rec ? rec.html : '');
     mode = 'edit';
