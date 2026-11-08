@@ -7,13 +7,14 @@
 //    把 firebaseConfig 那一整段的值貼進來。databaseURL 一定要有。
 //    apiKey 留空的話，網站會用「示範模式」執行：資料只存在這台電腦的瀏覽器裡。
 export const firebaseConfig = {
-  apiKey: "",
-  authDomain: "",
-  databaseURL: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: ""
+  apiKey: "AIzaSyDRCwC3pbmuJgintM_HwislLwwKQ-CDvnU",
+  authDomain: "sentouryoku.firebaseapp.com",
+  databaseURL: "https://sentouryoku-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "sentouryoku",
+  storageBucket: "sentouryoku.firebasestorage.app",
+  messagingSenderId: "415744445104",
+  appId: "1:415744445104:web:3762503e91d6a9a7358975",
+  measurementId: "G-X0T1PJL4C1"
 };
 
 // ② 網站設定
