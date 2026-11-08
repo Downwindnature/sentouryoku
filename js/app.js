@@ -240,7 +240,7 @@ function renderWho() {
   if (!chips || !nameEl) return;
   const page = currentPage();
   const ed = page && page.editor;
-  nameEl.textContent = ed || '—';
+  nameEl.textContent = ed || (page ? '未填' : '—');
   nameEl.classList.toggle('muted', !ed);
   $('#who').title = !page ? '新增分頁時填寫編輯者' : (ed ? `「${page.name}」的編輯者` : '這個分頁還沒填編輯者：點下方的分頁 →「修改名稱與編輯者」');
   const kids = [];

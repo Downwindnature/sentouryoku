@@ -79,7 +79,7 @@
 3. repository 的 **Settings → Pages** → Source 選 **Deploy from a branch** → Branch 選 `main`、資料夾選 `/ (root)` → **Save**。
 4. 等 1～2 分鐘，網址會是 `https://你的帳號.github.io/repository名稱/`。
 
-之後只要改了檔案，重新上傳覆蓋就好。
+之後只要改了檔案，重新上傳覆蓋就好。每次更新請把 `index.html` 和 `js`、`css` 資料夾一起上傳（`index.html` 裡有版本號，換了版本號瀏覽器就會抓新的程式）。如果畫面看起來還是舊的，電腦按 **Ctrl+F5** 強制重新整理。
 
 ---
 
