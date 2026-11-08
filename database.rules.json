@@ -1,0 +1,80 @@
+{
+  "rules": {
+    "owner": {
+      ".read": true,
+      ".write": "auth != null && !data.exists() && newData.val() === auth.uid"
+    },
+    "editors": {
+      ".read": "auth != null && root.child('owner').val() === auth.uid",
+      ".write": "auth != null && root.child('owner').val() === auth.uid",
+      "$email": {
+        ".read": "auth != null && auth.token.email != null && auth.token.email.toLowerCase().replace('.', ',') === $email",
+        ".validate": "newData.isBoolean()"
+      }
+    },
+    "settings": {
+      ".read": true,
+      ".write": "auth != null && root.child('owner').val() === auth.uid",
+      "publicRead": {
+        ".validate": "newData.isBoolean()"
+      },
+      "$other": {
+        ".validate": false
+      }
+    },
+    "pages": {
+      ".read": "root.child('settings').child('publicRead').val() !== false || (auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true)))",
+      ".write": "auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true))",
+      "$pid": {
+        ".validate": "newData.hasChildren(['name'])",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 40"
+        }
+      }
+    },
+    "ratings": {
+      ".read": "root.child('settings').child('publicRead').val() !== false || (auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true)))",
+      ".write": "auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true))"
+    },
+    "entries": {
+      ".read": "root.child('settings').child('publicRead').val() !== false || (auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true)))",
+      ".write": "auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true))",
+      "$pid": {
+        "$eid": {
+          ".validate": "newData.hasChildren(['name', 'updatedAt'])",
+          "name": {
+            ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 60"
+          },
+          "power": {
+            ".validate": "newData.isString() && newData.val().length <= 40"
+          },
+          "html": {
+            ".validate": "newData.isString() && newData.val().length <= 1000000"
+          },
+          "updatedAt": {
+            ".validate": "newData.isNumber()"
+          },
+          "pinnedAt": {
+            ".validate": "newData.isNumber()"
+          }
+        }
+      }
+    },
+    "history": {
+      ".read": "root.child('settings').child('publicRead').val() !== false || (auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true)))",
+      ".write": "auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true))"
+    },
+    "media": {
+      ".read": "root.child('settings').child('publicRead').val() !== false || (auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true)))",
+      ".write": "auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true))"
+    },
+    "mediaThumb": {
+      ".read": "root.child('settings').child('publicRead').val() !== false || (auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true)))",
+      ".write": "auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true))"
+    },
+    "mediaData": {
+      ".read": "root.child('settings').child('publicRead').val() !== false || (auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true)))",
+      ".write": "auth != null && (root.child('owner').val() === auth.uid || (auth.token.email_verified === true && root.child('editors').child(auth.token.email.toLowerCase().replace('.', ',')).val() === true))"
+    }
+  }
+}

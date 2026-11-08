@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>戰力名單</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="記錄每個人的戰力、評分與心得的名單網站">
+<meta name="theme-color" content="#e3e9ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d141e" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='6' y='6' width='52' height='52' rx='9' fill='%23fff5f3' stroke='%23c0392b' stroke-width='5'/%3E%3Crect x='14' y='14' width='36' height='36' rx='4' fill='none' stroke='%23c0392b' stroke-width='2.5'/%3E%3Cpath d='M22 40 32 22l10 18M26 34h12' fill='none' stroke='%23c0392b' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="shell" id="app">
+  <div class="sheet">
+    <header class="topbar">
+      <button type="button" class="who" id="btn-who" aria-haspopup="dialog"><span class="who-label">編輯者：</span><span class="who-name muted">…</span></button>
+      <button type="button" class="btn" id="btn-new" hidden>新增表單</button>
+      <button type="button" class="btn" id="btn-rating">戰力評分方式</button>
+      <form class="search" id="search-form" role="search">
+        <button type="submit" class="btn" id="btn-search">搜尋</button>
+        <input type="text" id="search-input" class="search-input" placeholder="名字" aria-label="用名字搜尋" autocomplete="off" enterkeyhint="search">
+        <button type="button" class="btn" id="btn-clear">清除</button>
+      </form>
+    </header>
+    <main class="list" id="list" aria-live="polite">
+      <div class="state"><div class="spinner"></div><div class="state-text">載入中…</div></div>
+    </main>
+    <nav class="pager is-off" id="pager" aria-label="換頁">
+      <span class="pager-count" id="pager-count"></span>
+      <button type="button" class="btn" id="btn-prev">上一頁</button>
+      <span class="pager-num" id="pager-num">1 / 1</span>
+      <button type="button" class="btn" id="btn-next">下一頁</button>
+      <label class="pager-sort" for="sort-select"><span>排序</span><select id="sort-select"></select></label>
+    </nav>
+  </div>
+  <nav class="tabs" aria-label="分頁">
+    <button type="button" class="tab-add" id="btn-add-page" title="新增分頁" aria-label="新增分頁" hidden>+</button>
+    <div class="tab-list" id="tab-list" role="tablist"></div>
+  </nav>
+</div>
+<noscript><div class="noscript">這個網站需要開啟 JavaScript 才能使用。</div></noscript>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
