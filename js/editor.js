@@ -1,5 +1,5 @@
 // 自由編輯區：像 Word 一樣打字、插入圖片/GIF/影片、手繪，並支援文繞圖
-import { h, makeId, clamp, isId, fmtBytes } from './util.js';
+import { h, makeId, clamp, isId, fmtBytes, ls } from './util.js';
 import { icon } from './icons.js';
 import { kindOf, processImage, processGif, processVideo, processCanvas } from './media.js';
 import { openDrawPad } from './draw.js';
@@ -517,8 +517,11 @@ export class RichEditor {
 
   destroy() {
     this.destroyed = true;
+    this.cancelLongPress();
+    this.dragEnd(false);
     document.removeEventListener('selectionchange', this._onSel);
     if (this._ro) this._ro.disconnect();
+    if (this._roTb) this._roTb.disconnect();
     for (const m of this.pending.values()) if (m.url) URL.revokeObjectURL(m.url);
     this.pending.clear();
     this.closePop();
@@ -894,57 +897,218 @@ export class RichEditor {
     handle.addEventListener('pointercancel', up);
   }
 
+  // ---------- 拖曳移動媒體 ----------
+  // 三種開始方式：按住工具列的 ✥、滑鼠直接拖圖片、手指長按圖片。
+  // 手指拖曳時，放置位置算在指尖上方一點，紅線才不會被手指擋住。
+
+  /** 按住媒體工具列的 ✥ */
   startMove(e) {
     const m = this.selMedia;
     if (!m) return;
     e.preventDefault();
     const btn = e.currentTarget;
     try { btn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-    m.classList.add('moving');
-    this.mbar.classList.add('ghost');
-    let target = null;
-    const sc = this.scroller;
-    const move = ev => {
-      const sr = sc.getBoundingClientRect();
-      if (ev.clientY < sr.top + 36) sc.scrollTop -= 14;
-      else if (ev.clientY > sr.bottom - 36) sc.scrollTop += 14;
-      const r = caretFromPoint(ev.clientX, ev.clientY);
-      if (r && this.area.contains(r.startContainer) && !m.contains(r.startContainer) && !closestMedia(r.startContainer)) {
-        target = r;
-        const rect = caretRect(r);
-        if (rect) {
-          Object.assign(this.dropLine.style, {
-            left: (rect.x - sr.left + sc.scrollLeft - 1) + 'px',
-            top: (rect.y - sr.top + sc.scrollTop) + 'px',
-            height: rect.h + 'px'
-          });
-          this.dropLine.hidden = false;
-        }
-      } else {
-        target = null;
-        this.dropLine.hidden = true;
-      }
-    };
-    const up = () => {
+    this.dragBegin(m, e.clientX, e.clientY, e.pointerType === 'touch');
+    const move = ev => { if (ev.pointerId === e.pointerId) this.dragMove(ev.clientX, ev.clientY); };
+    const up = ev => {
+      if (ev.pointerId !== e.pointerId) return;
       btn.removeEventListener('pointermove', move);
       btn.removeEventListener('pointerup', up);
       btn.removeEventListener('pointercancel', up);
-      m.classList.remove('moving');
-      this.mbar.classList.remove('ghost');
-      this.dropLine.hidden = true;
-      if (target) {
-        this.history.flush();
-        if (target.startContainer === this.area) { const p = h('p'); target.insertNode(p); p.append(m); }
-        else target.insertNode(m);
-        this.selectMedia(m);
-        this.changed();
-      } else {
-        this.placeMediaBar();
-      }
+      this.dragEnd(ev.type === 'pointerup');
     };
     btn.addEventListener('pointermove', move);
     btn.addEventListener('pointerup', up);
     btn.addEventListener('pointercancel', up);
+  }
+
+  /** 滑鼠／觸控筆按住圖片：移動超過幾個像素才開始拖，沒動就當成點一下 */
+  pressMedia(e, m) {
+    e.preventDefault(); // 不要開始選取文字
+    const id = e.pointerId, sx = e.clientX, sy = e.clientY;
+    let started = false;
+    const move = ev => {
+      if (ev.pointerId !== id) return;
+      if (!started) {
+        if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
+        started = true;
+        this.dragBegin(m, ev.clientX, ev.clientY, false);
+      }
+      this.dragMove(ev.clientX, ev.clientY);
+    };
+    const up = ev => {
+      if (ev.pointerId !== id) return;
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', up);
+      if (started) { this.suppressClick(); this.dragEnd(ev.type === 'pointerup'); }
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', up);
+  }
+
+  /** 手指：長按圖片 0.4 秒開始拖；手指先移動就照常捲動畫面 */
+  onTouchStart(e) {
+    if (e.touches.length > 1) { this.cancelLongPress(); if (this.drag) this.dragEnd(false); return; }
+    const t = e.changedTouches[0];
+    const m = closestMedia(e.target);
+    if (!t || !m || !this.area.contains(m) || (e.target.closest && e.target.closest('.m-handle, .m-play, video'))) return;
+    this.cancelLongPress();
+    const lp = { id: t.identifier, x: t.clientX, y: t.clientY, m };
+    lp.timer = setTimeout(() => {
+      if (this.lp !== lp) return;
+      this.lp = null;
+      this.dragBegin(m, lp.x, lp.y, true, lp.id);
+      try { if (navigator.vibrate) navigator.vibrate(12); } catch { /* ignore */ }
+    }, 400);
+    this.lp = lp;
+  }
+
+  onTouchMove(e) {
+    const d = this.drag;
+    if (d && d.touchId != null) {
+      if (e.cancelable) e.preventDefault(); // 拖曳中不要捲動畫面
+      const t = [...e.changedTouches].find(x => x.identifier === d.touchId);
+      if (t) this.dragMove(t.clientX, t.clientY);
+      return;
+    }
+    const lp = this.lp;
+    if (!lp) return;
+    const t = [...e.changedTouches].find(x => x.identifier === lp.id);
+    if (t && Math.hypot(t.clientX - lp.x, t.clientY - lp.y) > 10) this.cancelLongPress();
+  }
+
+  onTouchEnd(e, ok) {
+    const ids = [...e.changedTouches].map(x => x.identifier);
+    if (this.lp && ids.includes(this.lp.id)) this.cancelLongPress();
+    const d = this.drag;
+    if (d && d.touchId != null && ids.includes(d.touchId)) {
+      if (e.cancelable) e.preventDefault(); // 放開後不要再觸發點擊、叫出鍵盤
+      this.suppressClick();
+      this.dragEnd(ok);
+    }
+  }
+
+  cancelLongPress() {
+    if (this.lp) { clearTimeout(this.lp.timer); this.lp = null; }
+  }
+
+  /** 拖曳結束後緊接著的那次 click 不要處理（不然會取消選取）；下一次按下就恢復 */
+  suppressClick() {
+    this._noClick = true;
+    const clear = () => {
+      this._noClick = false;
+      clearTimeout(timer);
+      document.removeEventListener('pointerdown', clear, true);
+    };
+    const timer = setTimeout(clear, 800);
+    document.addEventListener('pointerdown', clear, true);
+  }
+
+  dragBegin(m, x, y, touch, touchId = null) {
+    if (this.drag) this.dragEnd(false);
+    this.history.flush();
+    if (this.selMedia !== m) this.selectMedia(m);
+    m.classList.add('moving');
+    this.mbar.classList.add('ghost');
+    this.area.classList.add('dragging');
+    const pic = m.querySelector('img');
+    const ghost = h('div', { class: 'ed-ghost' + (pic && pic.src ? '' : ' no-img'), 'aria-hidden': 'true' },
+      pic && pic.src ? h('img', { src: pic.src, alt: '' }) : h('span', { html: icon(m.dataset.type === 'video' ? 'video' : 'image') }));
+    this.el.append(ghost);
+    this.drag = { m, x, y, touch, touchId, ghost, target: null, raf: 0 };
+    this.dragMove(x, y);
+    // 拖到編輯區上下邊緣時自動捲動（手指不動也會繼續捲）
+    const loop = () => {
+      const d = this.drag;
+      if (!d) return;
+      const sc = this.scroller, sr = sc.getBoundingClientRect();
+      const vv = window.visualViewport;
+      const top = Math.max(sr.top, vv ? vv.offsetTop : 0);
+      const bottom = Math.min(sr.bottom, vv ? vv.offsetTop + vv.height : window.innerHeight);
+      const py = this.dragPointY();
+      const zone = 48;
+      let dy = 0;
+      if (py < top + zone) dy = -(top + zone - py) / 3;
+      else if (py > bottom - zone) dy = (py - (bottom - zone)) / 3;
+      if (dy) {
+        const before = sc.scrollTop;
+        sc.scrollTop += clamp(Math.round(dy), -18, 18) || Math.sign(dy);
+        if (sc.scrollTop !== before) this.dragTarget();
+      }
+      d.raf = requestAnimationFrame(loop);
+    };
+    this.drag.raf = requestAnimationFrame(loop);
+  }
+
+  /** 計算放置位置用的 y：手指時往上偏一點，避開指尖 */
+  dragPointY() {
+    const d = this.drag;
+    return d.touch ? d.y - 30 : d.y;
+  }
+
+  dragMove(x, y) {
+    const d = this.drag;
+    if (!d) return;
+    d.x = x; d.y = y;
+    const g = d.ghost;
+    const gw = g.offsetWidth || 88, gh = g.offsetHeight || 60;
+    const vw = document.documentElement.clientWidth;
+    g.style.left = clamp(x - gw / 2, 4, Math.max(4, vw - gw - 4)) + 'px';
+    g.style.top = (d.touch ? Math.max(4, y - gh - 64) : y + 18) + 'px';
+    this.dragTarget();
+  }
+
+  dragTarget() {
+    const d = this.drag;
+    if (!d) return;
+    const sc = this.scroller, sr = sc.getBoundingClientRect();
+    const px = clamp(d.x, sr.left + 2, sr.right - 2);
+    const py = this.dragPointY();
+    const r = py >= sr.top && py <= sr.bottom ? caretFromPoint(px, py) : null;
+    if (r && this.area.contains(r.startContainer) && !d.m.contains(r.startContainer) && !closestMedia(r.startContainer)) {
+      d.target = r;
+      const rect = caretRect(r);
+      if (rect) {
+        Object.assign(this.dropLine.style, {
+          left: (rect.x - sr.left + sc.scrollLeft - 1) + 'px',
+          top: (rect.y - sr.top + sc.scrollTop) + 'px',
+          height: rect.h + 'px'
+        });
+        this.dropLine.hidden = false;
+      }
+    } else {
+      d.target = null;
+      this.dropLine.hidden = true;
+    }
+  }
+
+  dragEnd(commit) {
+    const d = this.drag;
+    if (!d) return;
+    this.drag = null;
+    cancelAnimationFrame(d.raf);
+    d.ghost.remove();
+    const m = d.m;
+    m.classList.remove('moving');
+    this.mbar.classList.remove('ghost');
+    this.area.classList.remove('dragging');
+    this.dropLine.hidden = true;
+    if (commit && d.target && m.isConnected && !this.destroyed) {
+      const from = m.parentNode;
+      const t = d.target;
+      if (t.startContainer === this.area) { const p = h('p'); t.insertNode(p); p.append(m); }
+      else t.insertNode(m);
+      // 圖片搬走後，原本只放它的空段落一起拿掉
+      if (from && from !== this.area && from.isConnected && /^(P|DIV)$/.test(from.nodeName) &&
+          !from.textContent.trim() && !from.querySelector('span.m, br, hr')) from.remove();
+      this.ensureBlock();
+      this.selectMedia(m);
+      this.changed();
+    } else if (!this.destroyed) {
+      this.placeMediaBar();
+    }
   }
 
   removeMedia(m) {
@@ -1021,11 +1185,29 @@ export class RichEditor {
       else if (e.inputType === 'historyRedo') { e.preventDefault(); this.history.redo(); }
     });
     a.addEventListener('keydown', e => this.onKeyDown(e));
-    a.addEventListener('click', e => this.onClick(e));
-    a.addEventListener('pointerdown', e => {
-      const hd = e.target.closest && e.target.closest('.m-handle');
-      if (hd && a.contains(hd)) this.startResize(e, hd.closest('span.m'));
+    a.addEventListener('click', e => {
+      if (this._noClick) { this._noClick = false; e.preventDefault(); return; }
+      this.onClick(e);
     });
+    a.addEventListener('pointerdown', e => {
+      this._ptype = e.pointerType;
+      const hd = e.target.closest && e.target.closest('.m-handle');
+      if (hd && a.contains(hd)) { this.startResize(e, hd.closest('span.m')); return; }
+      // 滑鼠／觸控筆直接拖圖片（手指改用長按，見 onTouchStart）
+      if (e.pointerType === 'touch' || e.button !== 0) return;
+      const m = closestMedia(e.target);
+      if (m && a.contains(m) && !(e.target.closest && e.target.closest('.m-play, video'))) this.pressMedia(e, m);
+    });
+    // 手指點圖片：只選取圖片，不要把游標放進去叫出鍵盤
+    a.addEventListener('mousedown', e => {
+      if (this._ptype === 'touch' && closestMedia(e.target) && !(e.target.closest && e.target.closest('.m-play, video'))) e.preventDefault();
+    });
+    a.addEventListener('touchstart', e => this.onTouchStart(e), { passive: true });
+    a.addEventListener('touchmove', e => this.onTouchMove(e), { passive: false });
+    a.addEventListener('touchend', e => this.onTouchEnd(e, true));
+    a.addEventListener('touchcancel', e => this.onTouchEnd(e, false));
+    // 長按圖片時不要跳出瀏覽器的「下載圖片」選單
+    a.addEventListener('contextmenu', e => { if (this.drag || this.lp || closestMedia(e.target)) e.preventDefault(); });
     a.addEventListener('paste', e => this.onPaste(e));
     a.addEventListener('dragstart', e => {
       if (closestMedia(e.target)) { e.preventDefault(); return; }
@@ -1036,10 +1218,23 @@ export class RichEditor {
     a.addEventListener('drop', e => this.onDrop(e));
     this.fileImage.addEventListener('change', () => { const f = [...this.fileImage.files]; if (f.length) this.insertFiles(f, this.insertRange); });
     this.fileVideo.addEventListener('change', () => { const f = [...this.fileVideo.files]; if (f.length) this.insertFiles(f, this.insertRange); });
-    this.scroller.addEventListener('scroll', () => { if (this.pop) this.closePop(); });
+    this.scroller.addEventListener('scroll', () => {
+      // 編輯區只能上下捲；萬一被瀏覽器橫向捲走就拉回來
+      if (this.scroller.scrollLeft) this.scroller.scrollLeft = 0;
+      if (this.pop) this.closePop();
+    });
+    const tb = this.toolbar;
+    const tbHint = () => {
+      const max = tb.scrollWidth - tb.clientWidth;
+      tb.classList.toggle('more-l', max > 2 && tb.scrollLeft > 2);
+      tb.classList.toggle('more-r', max > 2 && tb.scrollLeft < max - 2);
+    };
+    tb.addEventListener('scroll', tbHint, { passive: true });
     if (typeof ResizeObserver !== 'undefined') {
       this._ro = new ResizeObserver(() => { if (this.selMedia) this.placeMediaBar(); });
       this._ro.observe(this.area);
+      this._roTb = new ResizeObserver(tbHint);
+      this._roTb.observe(tb);
     }
   }
 
@@ -1070,6 +1265,13 @@ export class RichEditor {
     if (m && this.area.contains(m)) {
       if (e.target.closest('.m-handle')) return;
       this.selectMedia(m);
+      if (this._ptype === 'touch') {
+        // 手機：收起鍵盤，讓圖片和工具列有空間；第一次順便提示怎麼拖曳
+        if (document.activeElement === this.area) this.area.blur();
+        if (!ls.get('pr-hint-drag')) { ls.set('pr-hint-drag', 1); toast('按住圖片不放，就可以拖到想放的位置'); }
+        return;
+      }
+      this.area.focus({ preventScroll: true });
       const r = document.createRange();
       r.setStartAfter(m);
       r.collapse(true);
