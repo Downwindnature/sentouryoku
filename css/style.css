@@ -406,7 +406,8 @@ html.has-layer { overflow: hidden; }
 
 .toasts {
   position: fixed; z-index: 100; left: 50%; transform: translateX(-50%);
-  bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+  /* 名單視窗開著時，--toast-bottom 會設成視窗底部按鈕列的上緣，提示才不會蓋住按鈕 */
+  bottom: var(--toast-bottom, calc(66px + env(safe-area-inset-bottom, 0px)));
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   width: max-content; max-width: calc(100vw - 32px); pointer-events: none;
 }
@@ -461,23 +462,48 @@ html.has-layer { overflow: hidden; }
   /* clip：只裁切圓角，瀏覽器不能把它橫向捲走 */
   border: 1px solid var(--rule-2); border-radius: 8px; overflow: hidden; overflow: clip;
 }
-.e-content-title { padding: 4px; text-align: center; font-size: 14px; font-weight: 700; letter-spacing: .4em; color: var(--ink-2); background: var(--sheet-2); border-bottom: 1px solid var(--rule); }
+/* 內容標題列：標題置中；翻閱過往紀錄時左邊「撤回」、右邊「刪除這筆紀錄」 */
+.e-content-title {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px;
+  min-height: 30px; padding: 2px 6px;
+  background: var(--sheet-2); border-bottom: 1px solid var(--rule);
+}
+.ect-text { padding: 2px 0; text-align: center; font-size: 14px; font-weight: 700; letter-spacing: .4em; color: var(--ink-2); white-space: nowrap; }
+.ect-side { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ect-right { justify-content: flex-end; }
+.btn.ect-btn { min-height: 26px; padding: 0 9px; gap: 4px; font-size: 12.5px; }
+.btn.ect-btn .i { width: 15px; height: 15px; }
+.btn.ect-undo { color: var(--navy); border-color: var(--navy); font-weight: 500; }
 .e-content-host { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .e-content-host > .ed { flex: 1; min-height: 0; }
 .e-view-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--paper); }
 .e-view-scroll > .rc { padding: 16px 22px 36px; }
 .e-empty { color: #8a97a5 !important; }
 .e-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
-.f-left, .f-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* 只限視窗底部（內容裡的圖片也有 f-left／f-right 這兩個 class，不能互相影響） */
+.e-foot > .f-left, .e-foot > .f-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.e-foot > .f-right { margin-left: auto; } /* 一行排不下、換到下一行時也靠右 */
 .f-info, .f-pages {
   display: inline-flex; align-items: baseline; gap: 2px; flex-wrap: wrap;
   min-height: 34px; align-content: center;
   padding: 0 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet-2);
   font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums;
 }
-.f-info time, .f-pages { color: var(--ink); }
+.f-info time, .f-pages .pager-total { color: var(--ink); }
+/* 過往紀錄的頁數：可以直接輸入 */
+form.f-pages { align-items: center; flex-wrap: nowrap; gap: 5px; margin: 0; padding-right: 8px; }
+.f-pages .page-input { width: 3.4em; height: 26px; font-size: 13px; }
+.f-nav { display: flex; align-items: center; gap: 6px; }
+@media (min-width: 601px) {
+  /* 從編輯畫面翻閱時按鈕最多，桌機上盡量排成一行 */
+  .entry-modal[data-mode="history"] .e-foot .btn { padding: 0 11px; }
+}
 .entry-modal[data-mode="history"] .e-content { border-color: var(--seal); border-style: dashed; }
-.entry-modal[data-mode="history"] .e-content-title::after { content: "（過往紀錄）"; letter-spacing: 0; font-weight: 400; color: var(--seal); }
+.entry-modal[data-mode="history"] .ect-text::after { content: "（過往紀錄）"; letter-spacing: 0; font-weight: 400; color: var(--seal); }
+/* 過往紀錄全部刪光時（內容區是白紙，用紙上的墨色） */
+.h-empty { display: grid; justify-items: center; gap: 6px; padding: 56px 20px; text-align: center; font-size: 14px; color: var(--paper-ink); text-wrap: balance; }
+.h-empty > :last-child { opacity: .72; }
+.h-empty-title { font-size: 17px; font-weight: 700; }
 
 /* ---------- 戰力評分方式 ---------- */
 .rating-modal {
@@ -739,9 +765,12 @@ html.has-layer { overflow: hidden; }
   .ed-area { padding: 12px 14px 40px; }
   .ed-area.is-empty::before { left: 14px; right: 14px; top: 12px; }
   .e-foot { gap: 6px; }
-  .f-left { width: 100%; }
-  .f-right { width: 100%; }
-  .f-right .btn { flex: 1 1 0; padding: 0 8px; }
+  .e-foot > .f-left, .e-foot > .f-right { width: 100%; }
+  .e-foot > .f-right .btn { flex: 1 1 0; padding: 0 8px; }
+  /* 過往紀錄：換頁四顆排一整行，返回放下一行 */
+  .e-foot .f-nav { width: 100%; gap: 6px; }
+  .e-foot .f-nav .btn { flex: 1 1 0; min-width: 0; padding: 0 4px; gap: 3px; }
+  .ect-long { display: none; }
   .tb-label span { display: none; }
   /* 手機工具列：插入圖片／影片／手繪放最前面，其他往左滑 */
   .ed-toolbar { gap: 8px; padding: 4px 8px; }
@@ -755,6 +784,9 @@ html.has-layer { overflow: hidden; }
   .dp-hint { display: none; }
   .dp-foot-btns { width: 100%; }
   .dp-foot-btns .btn { flex: 1; }
+}
+@media (max-width: 370px) {
+  .ect-mid { display: none; } /* 很窄的手機：「刪除紀錄」縮成「刪除」，才不會壓到中間的標題 */
 }
 
 @media (prefers-reduced-motion: reduce) {

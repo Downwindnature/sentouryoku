@@ -112,6 +112,7 @@ export function toast(message, type = 'info', ms = 2800) {
     toastBox = h('div', { class: 'toasts', role: 'status', 'aria-live': 'polite' });
     document.body.append(toastBox);
   }
+  for (const old of [...toastBox.children]) if (old.textContent === message) old.remove(); // 同樣的訊息不要疊好幾個
   const t = h('div', { class: 'toast ' + type, text: message });
   toastBox.append(t);
   while (toastBox.children.length > 3) toastBox.firstChild.remove();

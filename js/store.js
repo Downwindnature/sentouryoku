@@ -14,6 +14,8 @@ import { makeId, toList, orderedParts, runLimited, isId } from './util.js';
 import { CHUNK, blobToBase64, chunkString, base64PartsToBlob } from './media.js';
 
 export const rateScope = pid => 'r_' + pid;
+/** 過往紀錄的順序：新的在前（第 1 頁是最近一次被取代的版本） */
+export const historyOrder = (a, b) => (b.at || 0) - (a.at || 0) || (a.id < b.id ? 1 : -1);
 const APP_TAG = 'power-roster';
 const FORMAT = 1;
 
@@ -182,7 +184,27 @@ export function createStore(A) {
 
     async listHistory(eid) {
       const v = await A.get('history/' + eid);
-      return toList(v).sort((a, b) => (b.at || 0) - (a.at || 0) || (a.id < b.id ? 1 : -1));
+      return toList(v).sort(historyOrder);
+    },
+
+    /** 刪除一筆過往紀錄。它用到的圖片先留著（要能撤回），離開過往紀錄時才用 cleanMedia 清掉 */
+    deleteHistory: (eid, hid) => A.set(`history/${eid}/${hid}`, null),
+
+    /** 撤回刪除：把同一筆紀錄原封不動放回去（id、時間都不變，所以會回到原本那一頁） */
+    async restoreHistory(pid, eid, rec) {
+      if (!(await A.get(`entries/${pid}/${eid}`))) throw new Error('GONE'); // 整筆名單已經被刪掉了，不要留下孤兒紀錄
+      const { id, ...data } = rec;
+      await A.set(`history/${eid}/${id}`, data);
+    },
+
+    /** 清掉目前內容和過往紀錄都沒用到的媒體；keep：另外要留著的（例如編輯中、還沒存檔的內容用到的） */
+    async cleanMedia(pid, eid, keep = null) {
+      const [entry, hist] = await Promise.all([A.get(`entries/${pid}/${eid}`), A.get('history/' + eid)]);
+      if (!entry) return; // 名單已經被刪除，媒體也跟著刪了
+      const refs = collectRefs(entry.html, entry.avatar);
+      for (const h of Object.values(hist || {})) collectRefs(h.html, h.avatar, refs);
+      if (keep) for (const mid of keep) refs.add(mid);
+      await gcScope(eid, refs);
     },
 
     // ---------- 戰力評分方式 ----------

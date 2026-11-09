@@ -3,7 +3,7 @@ import { firebaseConfig, settings } from './config.js';
 import { h, $, fmtTime, fileStamp, makeId, ls, isPermissionError, downloadBlob, powerValue, debounce, clamp } from './util.js';
 import { icon } from './icons.js';
 import { createLocalAdapter } from './adapter-local.js';
-import { createStore, collectRefs, rateScope } from './store.js';
+import { createStore, collectRefs, rateScope, historyOrder } from './store.js';
 import { RichEditor, renderRich, htmlIsEmpty } from './editor.js';
 import { processAvatarFile } from './media.js';
 import { openLayer, confirmBox, alertBox, toast, busyBox, popover } from './ui.js';
@@ -222,33 +222,7 @@ function bindStatic() {
   $('#btn-prev').addEventListener('click', () => goPage(S.listPage - 1));
   $('#btn-next').addEventListener('click', () => goPage(S.listPage + 1));
   $('#btn-last').addEventListener('click', () => goPage(S.pageCount || 1));
-  const pageInput = $('#page-input');
-  const jump = () => {
-    const raw = pageInput.value.replace(/\D/g, '');
-    const total = S.pageCount || 1;
-    if (!raw) { pageInput.value = String(S.listPage); return; } // 沒填就恢復成目前頁數
-    const n = parseInt(raw, 10);
-    if (n > total) toast(`總共只有 ${total} 頁，已跳到最後一頁`);
-    goPage(clamp(n, 1, total));
-    pageInput.value = String(S.listPage);
-  };
-  $('#pager-jump').addEventListener('submit', e => { e.preventDefault(); jump(); pageInput.blur(); });
-  pageInput.addEventListener('change', jump);
-  // 點進去就全選，直接打新的頁數會取代原本的數字
-  let keepSel = false;
-  pageInput.addEventListener('focus', () => {
-    const v0 = pageInput.value;
-    pageInput.select();
-    keepSel = true;
-    setTimeout(() => { if (document.activeElement === pageInput && pageInput.value === v0) pageInput.setSelectionRange(0, v0.length); }, 0);
-  });
-  pageInput.addEventListener('mouseup', e => { if (keepSel) { keepSel = false; e.preventDefault(); } }); // 放開滑鼠時不要取消全選
-  pageInput.addEventListener('blur', () => { keepSel = false; });
-  pageInput.addEventListener('input', () => {
-    const v = pageInput.value.replace(/\D/g, '');
-    if (v !== pageInput.value) pageInput.value = v; // 只能輸入數字
-  });
-  pageInput.addEventListener('keydown', e => { if (e.key === 'Escape') { pageInput.value = String(S.listPage); pageInput.blur(); } });
+  bindPageJump($('#pager-jump'), $('#page-input'), { current: () => S.listPage, total: () => S.pageCount, go: goPage });
   $('#sort-select').addEventListener('change', e => { S.sort = e.target.value; ls.set('pr-sort', S.sort); S.listPage = 1; renderList(); });
 
   $('#btn-add-page').addEventListener('click', addPage);
@@ -257,6 +231,53 @@ function bindStatic() {
 }
 
 function scrollListTop() { const l = $('#list'); if (l) l.scrollTop = 0; }
+
+/**
+ * 可以直接輸入的頁數框（名單換頁、過往紀錄共用）：
+ * 點進去就全選、只能打數字、按 Enter 或點旁邊就跳過去、超過總頁數就跳到最後一頁、Esc 還原。
+ * current()、total() 回傳目前第幾頁和總頁數（從 1 開始算），go(n) 跳到第 n 頁。
+ */
+function bindPageJump(form, input, { current, total, go }) {
+  const jump = () => {
+    const raw = input.value.replace(/\D/g, '');
+    if (!raw) { input.value = String(current()); return; } // 沒填就恢復成目前頁數
+    const t = Math.max(1, total() || 1);
+    const n = parseInt(raw, 10);
+    if (n > t) toast(`總共只有 ${t} 頁，已跳到最後一頁`);
+    const to = clamp(n, 1, t);
+    if (to !== current()) go(to);
+    input.value = String(current());
+  };
+  form.addEventListener('submit', e => { e.preventDefault(); jump(); input.blur(); });
+  input.addEventListener('change', jump);
+  // 點進去就全選，直接打新的頁數會取代原本的數字
+  let keepSel = false;
+  input.addEventListener('focus', () => {
+    const v0 = input.value;
+    input.select();
+    keepSel = true;
+    setTimeout(() => { if (document.activeElement === input && input.value === v0) input.setSelectionRange(0, v0.length); }, 0);
+  });
+  input.addEventListener('mouseup', e => { if (keepSel) { keepSel = false; e.preventDefault(); } }); // 放開滑鼠時不要取消全選
+  input.addEventListener('blur', () => { keepSel = false; });
+  input.addEventListener('input', () => {
+    const v = input.value.replace(/\D/g, '');
+    if (v !== input.value) input.value = v; // 只能輸入數字
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault(); // 只還原頁數，不要連視窗一起關掉
+    input.value = String(current());
+    input.blur();
+  });
+}
+
+/** 子元素真的不一樣才換（同一顆按鈕拿掉再放回去，鍵盤焦點會跑掉） */
+function setKids(el, kids) {
+  const cur = el.children;
+  if (cur.length === kids.length && kids.every((k, i) => cur[i] === k)) return;
+  el.replaceChildren(...kids);
+}
 
 function renderSortSelect() {
   const sel = $('#sort-select');
@@ -713,7 +734,9 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
     pid: S.pid, eid: eid || makeId(), isNew: !eid, wasNew: !eid,
     entry: eid ? (S.entries.find(x => x.id === eid) || null) : null,
     mode, prevMode: mode, dirty: false, editor: null, saving: false,
-    avatar: null, avatarPending: new Map(), history: null, hIndex: 0
+    avatar: null, avatarPending: new Map(), history: null, hIndex: 0,
+    trash: [], // 這次翻閱過往紀錄時刪掉的紀錄（可以撤回）；按「返回」或關閉視窗就清空
+    hf: null   // 過往紀錄的按鈕列（翻閱期間一直沿用同一組，換頁時焦點不會跑掉）
   };
   if (!M.isNew && !M.entry) { toast('找不到這筆資料，可能已經被刪除', 'warn'); return; }
   M.base = M.entry ? M.entry.updatedAt : null;
@@ -736,12 +759,26 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
     h('div', { class: 'e-field' }, h('label', { class: 'e-lbl', for: 'e-name', text: '名字' }), h('div', { class: 'e-val' }, nameInput, nameView)));
 
   const contentHost = h('div', { class: 'e-content-host' });
-  const contentBox = h('section', { class: 'e-content', 'aria-label': '內容' }, h('div', { class: 'e-content-title', text: '內容' }), contentHost);
+  // 內容標題列：中間是標題；翻閱過往紀錄時，左邊放「撤回」、右邊放「刪除這筆紀錄」
+  const ctLeft = h('div', { class: 'ect-side' });
+  const ctRight = h('div', { class: 'ect-side ect-right' });
+  const contentBox = h('section', { class: 'e-content', 'aria-label': '內容' },
+    h('div', { class: 'e-content-title' }, ctLeft, h('div', { class: 'ect-text', text: '內容' }), ctRight), contentHost);
   const foot = h('div', { class: 'e-foot' });
   const panel = h('div', { class: 'panel entry-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': M.isNew ? '新增名單' : `名單：${M.entry.name}` },
     closeX, h('div', { class: 'e-head' }, avWrap, fields), contentBox, foot);
 
   const layer = openLayer(panel, { className: 'layer-entry', onRequestClose: requestClose, closeOnBackdrop: false });
+
+  // 提示訊息浮在底部按鈕列上面（手機上按鈕列有好幾行，不然會被提示蓋住）
+  const root = document.documentElement;
+  const liftToasts = () => {
+    if (layer.closed) return;
+    root.style.setProperty('--toast-bottom', Math.max(8, Math.round(window.innerHeight - foot.getBoundingClientRect().top + 10)) + 'px');
+  };
+  const footWatch = typeof ResizeObserver === 'function' ? new ResizeObserver(liftToasts) : null;
+  if (footWatch) footWatch.observe(foot);
+  window.addEventListener('resize', liftToasts);
 
   // ---- 狀態 ----
   const markDirty = () => { if (M.mode === 'edit') M.dirty = true; };
@@ -804,6 +841,8 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
   function render() {
     panel.dataset.mode = M.mode;
     if (M.mode === 'history') { renderHistory(); return; }
+    ctLeft.replaceChildren();
+    ctRight.replaceChildren();
     const editing = M.mode === 'edit';
     const e = M.entry;
     if (editing) ensureEditor();
@@ -845,45 +884,154 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
     try { M.history = await store.listHistory(M.eid); }
     catch (err) { busy.close(); reportWriteError(err, '讀取過往紀錄失敗'); return; }
     busy.close();
-    if (!M.history.length) { toast('這筆名單還沒有過往紀錄。之後每次修改並存檔，舊版本都會留在這裡。'); return; }
+    if (!M.history.length) { toast('這筆名單目前沒有過往紀錄。之後每次修改並存檔，舊版本都會留在這裡。'); return; }
     M.prevMode = M.mode;
     M.mode = 'history';
     M.hIndex = 0;
+    M.trash = [];
+    M.hf = buildHistoryBar();
     render();
+  }
+
+  /** 過往紀錄的按鈕：頁數（可以直接輸入）、最上頁／上一頁／下一頁／最下頁、返回；標題列的「刪除這筆紀錄」「撤回」 */
+  function buildHistoryBar() {
+    const go = i => { M.hIndex = clamp(i, 0, Math.max(0, M.history.length - 1)); render(); };
+    const time = h('time');
+    const input = h('input', { type: 'text', class: 'page-input', inputmode: 'numeric', enterkeyhint: 'go', autocomplete: 'off', maxlength: 5 });
+    const total = h('span');
+    const pages = h('form', { class: 'f-pages', novalidate: true, title: '輸入頁數後按 Enter 跳過去' },
+      h('span', { text: '頁數:' }), input, h('span', { class: 'pager-total' }, '/ ', total));
+    bindPageJump(pages, input, { current: () => M.hIndex + 1, total: () => M.history.length, go: n => go(n - 1) });
+    const hf = {
+      time, input, total, pages,
+      info: h('div', { class: 'f-info' }, h('span', { text: '當時紀錄:' }), time),
+      none: h('div', { class: 'f-info', text: '已經沒有過往紀錄了' }),
+      first: btn('最上頁', () => go(0), '', 'chevsLeft'),
+      prev: btn('上一頁', () => go(M.hIndex - 1), '', 'chevLeft'),
+      next: btn('下一頁', () => go(M.hIndex + 1), 'icon-right', 'chevRight'),
+      last: btn('最下頁', () => go(M.history.length - 1), 'icon-right', 'chevsRight'),
+      restore: btn('還原此版本', restoreVersion, '', 'undo'),
+      back: btn(M.prevMode === 'edit' ? '返回編輯' : '返回', leaveHistory, 'primary'),
+      del: btn('刪除<span class="ect-long">這筆</span><span class="ect-mid">紀錄</span>', deleteRecord, 'ect-btn danger-text', 'trash'),
+      undo: btn('撤回', undoDelete, 'ect-btn ect-undo', 'undo')
+    };
+    hf.undo.title = '把剛才刪除的紀錄放回去。按「返回」或關閉視窗之後就不能撤回了';
+    hf.nav = h('div', { class: 'f-nav' }, hf.first, hf.prev, hf.next, hf.last);
+    hf.left = h('div', { class: 'f-left' }, hf.info, hf.none, pages);
+    hf.right = h('div', { class: 'f-right' }, hf.nav, hf.restore, hf.back);
+    return hf;
   }
 
   function renderHistory() {
     const list = M.history;
-    const rec = list[M.hIndex];
-    avBox.replaceChildren(avatarEl(rec.avatar, M.eid, { full: true }));
+    const n = list.length;
+    const rec = n ? list[M.hIndex] : null;
+    const hf = M.hf;
+    // 上面顯示那個版本的頭像、戰力、名字（紀錄全部刪光的話，顯示目前的）
+    const top = rec || M.entry || {};
+    avBox.replaceChildren(avatarEl(top.avatar || null, M.eid, { full: true }));
     avWrap.classList.remove('editable');
     avWrap.tabIndex = -1;
     avHint.hidden = true;
     avRemove.hidden = true;
     powerInput.hidden = nameInput.hidden = true;
     powerView.hidden = nameView.hidden = false;
-    powerView.replaceChildren(stampEl(rec.power));
-    nameView.textContent = rec.name || '';
-    const v = h('div', { class: 'rc full' });
-    renderRich(v, rec.html || '', { store, scope: M.eid, mode: 'full' });
-    if (htmlIsEmpty(rec.html)) v.replaceChildren(h('p', { class: 'e-empty', text: '（這個版本沒有內容）' }));
-    contentHost.replaceChildren(h('div', { class: 'e-view-scroll' }, v));
-    const n = list.length;
-    const prev = btn('上一頁', () => { M.hIndex--; render(); }, '', 'chevLeft');
-    const next = btn('下一頁', () => { M.hIndex++; render(); }, 'icon-right', 'chevRight');
-    prev.disabled = M.hIndex <= 0;
-    next.disabled = M.hIndex >= n - 1;
-    const restore = M.prevMode === 'edit' && canEdit() ? btn('還原此版本', restoreVersion, '', 'undo') : null;
-    const back = btn(M.prevMode === 'edit' ? '返回編輯' : '返回', () => { M.mode = M.prevMode; render(); }, 'primary');
-    foot.replaceChildren(
-      h('div', { class: 'f-left' },
-        h('div', { class: 'f-info' }, h('span', { text: '當時紀錄:' }), h('time', { text: fmtTime(rec.at) })),
-        h('div', { class: 'f-pages', text: `頁數:${M.hIndex + 1}/${n}` })),
-      h('div', { class: 'f-right' }, prev, next, restore, back));
+    powerView.replaceChildren(stampEl(top.power));
+    nameView.textContent = top.name || '';
+    if (rec) {
+      const v = h('div', { class: 'rc full' });
+      renderRich(v, rec.html || '', { store, scope: M.eid, mode: 'full' });
+      if (htmlIsEmpty(rec.html)) v.replaceChildren(h('p', { class: 'e-empty', text: '（這個版本沒有內容）' }));
+      contentHost.replaceChildren(h('div', { class: 'e-view-scroll' }, v));
+    } else {
+      contentHost.replaceChildren(h('div', { class: 'e-view-scroll' }, h('div', { class: 'h-empty' },
+        h('div', { class: 'h-empty-title', text: '過往紀錄都刪除了' }),
+        h('div', { text: '按「返回」或關閉視窗之前，都可以按上方的「撤回」把紀錄放回來。' }))));
+    }
+    // 標題列：有刪過才出現「撤回」；每一頁都有自己的「刪除這筆紀錄」
+    setKids(ctLeft, M.trash.length ? [hf.undo] : []);
+    setKids(ctRight, rec && canEdit() ? [hf.del] : []);
+    if (rec) hf.del.title = `刪除 ${fmtTime(rec.at)} 的這筆紀錄（刪除後可以按「撤回」放回來）`;
+    // 下方：當時紀錄、頁數、換頁
+    hf.info.hidden = hf.pages.hidden = hf.nav.hidden = !rec;
+    hf.none.hidden = !!rec;
+    if (rec) {
+      const cur = M.hIndex + 1;
+      hf.time.textContent = fmtTime(rec.at);
+      if (document.activeElement !== hf.input) hf.input.value = String(cur); // 正在輸入時不要蓋掉
+      hf.input.disabled = n <= 1;
+      hf.input.setAttribute('aria-label', `目前第 ${cur} 頁，共 ${n} 頁。輸入頁數後按 Enter 跳過去`);
+      hf.total.textContent = String(n);
+      hf.first.disabled = hf.prev.disabled = M.hIndex <= 0;
+      hf.next.disabled = hf.last.disabled = M.hIndex >= n - 1;
+    }
+    hf.restore.hidden = !(rec && M.prevMode === 'edit' && canEdit());
+    if (foot.firstChild !== hf.left) foot.replaceChildren(hf.left, hf.right);
+  }
+
+  /** 刪除目前這一頁的紀錄（馬上從資料庫刪掉；按「返回」或關閉視窗之前都可以撤回） */
+  async function deleteRecord() {
+    const rec = M.history[M.hIndex];
+    if (!rec || M.saving) return;
+    M.saving = true; // 處理中不能連按、也不能關視窗
+    const busy = busyBox('刪除中…');
+    try { await store.deleteHistory(M.eid, rec.id); }
+    catch (err) { busy.close(); M.saving = false; reportWriteError(err, '刪除紀錄失敗'); return; }
+    busy.close();
+    M.saving = false;
+    M.trash.push(rec);
+    M.history.splice(M.history.indexOf(rec), 1);
+    M.hIndex = clamp(M.hIndex, 0, Math.max(0, M.history.length - 1)); // 停在原本的位置（顯示下一筆較舊的）
+    render();
+    toast('已刪除這筆紀錄。按「返回」或關閉視窗前，都可以按「撤回」放回來', 'info', 4500);
+  }
+
+  /** 撤回：最後刪掉的那筆放回去，並跳到它原本的那一頁（可以連續撤回好幾筆） */
+  async function undoDelete() {
+    const rec = M.trash[M.trash.length - 1];
+    if (!rec || M.saving) return;
+    M.saving = true;
+    const busy = busyBox('撤回中…');
+    try { await store.restoreHistory(M.pid, M.eid, rec); }
+    catch (err) {
+      busy.close();
+      M.saving = false;
+      if (err.message === 'GONE') alertBox('這筆名單已經被刪除了，沒辦法撤回。', { title: '無法撤回' });
+      else reportWriteError(err, '撤回失敗');
+      return;
+    }
+    busy.close();
+    M.saving = false;
+    M.trash.pop();
+    M.history.push(rec);
+    M.history.sort(historyOrder);
+    M.hIndex = M.history.indexOf(rec);
+    render();
+    const more = M.trash.length;
+    toast(`已撤回，紀錄放回第 ${M.hIndex + 1} 頁` + (more ? `（還可以再撤回 ${more} 筆）` : ''));
+  }
+
+  /** 離開過往紀錄（返回、還原此版本、關閉視窗）：刪除就此確定、不能再撤回，並清掉已經沒有任何版本用到的圖片 */
+  function endHistory() {
+    if (!M.trash.length) return;
+    M.trash = [];
+    // 編輯中還沒存檔的內容如果用到某張圖，也要留著
+    const keep = collectRefs(M.editor ? M.editor.area.innerHTML : '', M.avatar);
+    store.cleanMedia(M.pid, M.eid, keep).catch(err => console.warn('清理過往紀錄的圖片時發生問題', err));
+  }
+
+  function leaveHistory() {
+    if (M.saving) return;
+    endHistory();
+    M.mode = M.prevMode;
+    render();
   }
 
   function restoreVersion() {
+    if (M.saving) return;
     const rec = M.history[M.hIndex];
+    if (!rec) return;
+    endHistory();
     ensureEditor();
     powerInput.value = rec.power || '';
     nameInput.value = rec.name || '';
@@ -971,7 +1119,12 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
   }
 
   function finish() {
+    if (layer.closed) return;
+    endHistory(); // 關閉視窗後就不能撤回刪除了
     layer.close();
+    if (footWatch) footWatch.disconnect();
+    window.removeEventListener('resize', liftToasts);
+    root.style.removeProperty('--toast-bottom');
     if (M.editor) M.editor.destroy();
     for (const m of M.avatarPending.values()) if (m.url) URL.revokeObjectURL(m.url);
     M.avatarPending.clear();

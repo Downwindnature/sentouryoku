@@ -33,6 +33,8 @@ const P = {
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   chevLeft: '<path d="m15 18-6-6 6-6"/>',
   chevRight: '<path d="m9 18 6-6-6-6"/>',
+  chevsLeft: '<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>',
+  chevsRight: '<path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
   upload: '<path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/>',
