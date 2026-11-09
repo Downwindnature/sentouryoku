@@ -5,7 +5,7 @@ import { icon } from './icons.js';
 import { createLocalAdapter } from './adapter-local.js';
 import { createStore, collectRefs, rateScope } from './store.js';
 import { RichEditor, renderRich, htmlIsEmpty } from './editor.js';
-import { processAvatar } from './media.js';
+import { processAvatarFile } from './media.js';
 import { openLayer, confirmBox, alertBox, toast, busyBox, popover } from './ui.js';
 
 const SORTS = [
@@ -216,8 +216,39 @@ function bindStatic() {
   input.addEventListener('compositionend', applySoon);
   $('#btn-clear').addEventListener('click', () => { input.value = ''; applySoon.cancel(); apply(); input.focus(); });
 
-  $('#btn-prev').addEventListener('click', () => { S.listPage--; renderList(); scrollListTop(); });
-  $('#btn-next').addEventListener('click', () => { S.listPage++; renderList(); scrollListTop(); });
+  // 換頁：最上頁／上一頁／輸入頁數／下一頁／最下頁
+  const goPage = n => { S.listPage = n; renderList(); scrollListTop(); };
+  $('#btn-first').addEventListener('click', () => goPage(1));
+  $('#btn-prev').addEventListener('click', () => goPage(S.listPage - 1));
+  $('#btn-next').addEventListener('click', () => goPage(S.listPage + 1));
+  $('#btn-last').addEventListener('click', () => goPage(S.pageCount || 1));
+  const pageInput = $('#page-input');
+  const jump = () => {
+    const raw = pageInput.value.replace(/\D/g, '');
+    const total = S.pageCount || 1;
+    if (!raw) { pageInput.value = String(S.listPage); return; } // 沒填就恢復成目前頁數
+    const n = parseInt(raw, 10);
+    if (n > total) toast(`總共只有 ${total} 頁，已跳到最後一頁`);
+    goPage(clamp(n, 1, total));
+    pageInput.value = String(S.listPage);
+  };
+  $('#pager-jump').addEventListener('submit', e => { e.preventDefault(); jump(); pageInput.blur(); });
+  pageInput.addEventListener('change', jump);
+  // 點進去就全選，直接打新的頁數會取代原本的數字
+  let keepSel = false;
+  pageInput.addEventListener('focus', () => {
+    const v0 = pageInput.value;
+    pageInput.select();
+    keepSel = true;
+    setTimeout(() => { if (document.activeElement === pageInput && pageInput.value === v0) pageInput.setSelectionRange(0, v0.length); }, 0);
+  });
+  pageInput.addEventListener('mouseup', e => { if (keepSel) { keepSel = false; e.preventDefault(); } }); // 放開滑鼠時不要取消全選
+  pageInput.addEventListener('blur', () => { keepSel = false; });
+  pageInput.addEventListener('input', () => {
+    const v = pageInput.value.replace(/\D/g, '');
+    if (v !== pageInput.value) pageInput.value = v; // 只能輸入數字
+  });
+  pageInput.addEventListener('keydown', e => { if (e.key === 'Escape') { pageInput.value = String(S.listPage); pageInput.blur(); } });
   $('#sort-select').addEventListener('change', e => { S.sort = e.target.value; ls.set('pr-sort', S.sort); S.listPage = 1; renderList(); });
 
   $('#btn-add-page').addEventListener('click', addPage);
@@ -360,6 +391,7 @@ async function downloadBackup(page) {
     downloadBlob(blob, `戰力名單_${safeFileName(page.name)}_${fileStamp()}.json`);
     toast('已下載備份檔案');
   } catch (e) {
+    busy.close(); // 先關掉「打包中」，提示框才按得到
     await alertBox('備份失敗：' + (e.message || e));
   } finally { busy.close(); }
 }
@@ -510,12 +542,19 @@ function renderList() {
     else list.replaceChildren(stateBox('user', '這個分頁還沒有名單', canEdit() ? '按上方「新增表單」加入第一筆。' : ''));
   } else {
     list.replaceChildren(...slice.map(cardFor));
+    // 換頁回來時，影片頭像繼續播放（從畫面上拿掉的影片會自動暫停）
+    for (const v of list.querySelectorAll('.av video')) if (v.paused) v.play().catch(() => {});
   }
 
   $('#pager-count').textContent = S.search ? `符合 ${all.length} 筆` : `共 ${all.length} 筆`;
-  $('#pager-num').textContent = `${S.listPage} / ${pages}`;
-  $('#btn-prev').disabled = S.listPage <= 1;
-  $('#btn-next').disabled = S.listPage >= pages;
+  S.pageCount = pages;
+  const pageInput = $('#page-input');
+  if (document.activeElement !== pageInput) pageInput.value = String(S.listPage); // 正在輸入時不要蓋掉
+  pageInput.disabled = pages <= 1;
+  pageInput.setAttribute('aria-label', `目前第 ${S.listPage} 頁，共 ${pages} 頁。輸入頁數後按 Enter 跳過去`);
+  $('#pager-total').textContent = String(pages);
+  $('#btn-first').disabled = $('#btn-prev').disabled = S.listPage <= 1;
+  $('#btn-next').disabled = $('#btn-last').disabled = S.listPage >= pages;
   showPager(true);
 
   if (focusId) {
@@ -538,19 +577,46 @@ function renderList() {
 const DEFAULT_AVATAR = 'img/default-avatar.jpg';
 const defaultAvatar = () => h('img', { src: DEFAULT_AVATAR, alt: '', class: 'av-default' });
 
-/** 頭像：有設定就顯示自己的圖，沒有就用預設頭像 */
-function avatarEl(mid, scope, { full = false, pendingUrl = null } = {}) {
+/** 頭像裡實際顯示的東西：GIF 用圖片、影片一律靜音循環播放（不會有聲音） */
+function avatarMediaEl(type, url, thumb) {
+  if (type !== 'video') return h('img', { src: url, alt: '' });
+  const v = h('video', {
+    muted: true, autoplay: true, loop: true, playsinline: true, preload: 'auto',
+    disablepictureinpicture: true, disableremoteplayback: true, 'aria-hidden': 'true', tabindex: '-1'
+  });
+  v.muted = true;
+  v.defaultMuted = true;
+  v.addEventListener('volumechange', () => { if (!v.muted) v.muted = true; }); // 不管怎樣都保持靜音
+  if (thumb) v.poster = thumb; // 影片還沒開始播（或手機省電模式不自動播放）時先顯示封面
+  v.src = url;
+  v.addEventListener('canplay', () => { const p = v.play(); if (p) p.catch(() => {}); }, { once: true });
+  return v;
+}
+
+/** 頭像：有設定就顯示自己的圖（GIF、影片會動），沒有就用預設頭像 */
+function avatarEl(mid, scope, { full = false, pending = null } = {}) {
   const box = h('div', { class: 'av' });
-  if (pendingUrl) { box.append(h('img', { src: pendingUrl, alt: '' })); return box; }
-  if (mid) {
-    const img = h('img', { alt: '' });
-    box.append(img);
-    const fallback = () => box.replaceChildren(defaultAvatar());
-    const p = full ? S.store.getMediaUrl(scope, mid) : S.store.getThumb(scope, mid);
-    p.then(u => { if (u) img.src = u; else fallback(); }, fallback);
-    return box;
-  }
-  box.append(defaultAvatar());
+  if (pending) { box.append(avatarMediaEl(pending.type, pending.url, pending.thumb)); return box; }
+  if (!mid) { box.append(defaultAvatar()); return box; }
+  const store = S.store;
+  const img = h('img', { alt: '' });
+  box.append(img);
+  let swapped = false;
+  const fallback = () => { if (!swapped) box.replaceChildren(defaultAvatar()); };
+  // 先顯示縮圖；GIF、影片再換成會動的原檔（一般圖片在卡片上用縮圖就夠了）
+  const thumbP = store.getThumb(scope, mid).then(u => { if (u && !swapped) img.src = u; return u; }, () => null);
+  store.getMeta(scope, mid).then(async meta => {
+    const thumb = await thumbP;
+    if (!meta) { if (!thumb) fallback(); return; }
+    const type = meta.t === 'video' ? 'video' : (meta.t === 'gif' ? 'gif' : 'image');
+    if (type === 'image' && !full && thumb) return;
+    let url;
+    try { url = await store.getMediaUrl(scope, mid); } catch { if (!thumb) fallback(); return; }
+    const el = avatarMediaEl(type, url, thumb);
+    const swap = () => { swapped = true; box.replaceChildren(el); };
+    if (type === 'video') swap(); // 影片先用封面頂著，載入好就開始動
+    else { el.addEventListener('load', swap, { once: true }); el.addEventListener('error', () => { if (!thumb) fallback(); }, { once: true }); }
+  }).catch(() => thumbP.then(t => { if (!t) fallback(); }));
   return box;
 }
 
@@ -656,9 +722,9 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
   // ---- 元件 ----
   const closeX = h('button', { type: 'button', class: 'icon-btn modal-x', 'aria-label': '關閉', html: icon('x') });
   const avBox = h('div', { class: 'e-av-box' });
-  const avHint = h('div', { class: 'e-av-hint', text: '點這裡設定頭像（不設定就用預設）' });
+  const avHint = h('div', { class: 'e-av-hint', text: '點這裡設定頭像，可以用圖片、GIF、MP4（不設定就用預設）' });
   const avRemove = h('button', { type: 'button', class: 'e-av-remove', title: '移除頭像', 'aria-label': '移除頭像', html: icon('x') });
-  const avInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  const avInput = h('input', { type: 'file', accept: 'image/*,video/mp4,video/webm,video/quicktime,.gif,.mp4,.m4v,.webm,.mov', hidden: true });
   const avWrap = h('div', { class: 'e-av', role: 'button', 'aria-label': '頭像' }, avBox, avHint, avRemove, avInput);
 
   const powerInput = h('input', { type: 'text', class: 'e-input', id: 'e-power', maxlength: 40, placeholder: '例如 9850、S、12.5萬', autocomplete: 'off' });
@@ -697,7 +763,7 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
   function drawAvatar() {
     const editing = M.mode === 'edit';
     const pend = M.avatar ? M.avatarPending.get(M.avatar) : null;
-    avBox.replaceChildren(avatarEl(M.avatar, M.eid, { full: true, pendingUrl: pend ? pend.url : null }));
+    avBox.replaceChildren(avatarEl(M.avatar, M.eid, { full: true, pending: pend }));
     avWrap.classList.toggle('editable', editing);
     avWrap.tabIndex = editing ? 0 : -1;
     avHint.hidden = !editing;
@@ -712,16 +778,20 @@ function openEntry({ eid = null, mode = 'view' } = {}) {
     const file = avInput.files[0];
     if (!file) return;
     const busy = busyBox('處理頭像…');
-    try {
-      const m = await processAvatar(file);
-      const mid = makeId();
-      m.url = URL.createObjectURL(m.blob);
-      M.avatarPending.set(mid, m);
-      M.avatar = mid;
-      markDirty();
-      drawAvatar();
-    } catch (err) { await alertBox(err.message || String(err)); }
-    finally { busy.close(); }
+    let m;
+    try { m = await processAvatarFile(file, settings); }
+    catch (err) {
+      busy.close(); // 先關掉「處理中」，提示框才按得到
+      await alertBox(err.message || String(err), { title: '無法設定頭像' });
+      return;
+    }
+    busy.close();
+    const mid = makeId();
+    m.url = URL.createObjectURL(m.blob);
+    M.avatarPending.set(mid, m);
+    M.avatar = mid;
+    markDirty();
+    drawAvatar();
   });
 
   // ---- 畫面 ----

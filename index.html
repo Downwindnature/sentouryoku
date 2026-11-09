@@ -12,22 +12,22 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&family=Noto+Sans+TC:wght@400;500;700&display=swap">
-<link rel="stylesheet" href="css/style.css?v=20261109-5">
+<link rel="stylesheet" href="css/style.css?v=20261109-6">
 <!-- 版本號：每次更新網站都會換，瀏覽器才會抓新的程式（不會用到舊的快取） -->
 <script type="importmap">
 {
   "imports": {
-    "./js/config.js": "./js/config.js?v=20261109-5",
-    "./js/util.js": "./js/util.js?v=20261109-5",
-    "./js/icons.js": "./js/icons.js?v=20261109-5",
-    "./js/adapter-local.js": "./js/adapter-local.js?v=20261109-5",
-    "./js/adapter-firebase.js": "./js/adapter-firebase.js?v=20261109-5",
-    "./js/store.js": "./js/store.js?v=20261109-5",
-    "./js/media.js": "./js/media.js?v=20261109-5",
-    "./js/editor.js": "./js/editor.js?v=20261109-5",
-    "./js/draw.js": "./js/draw.js?v=20261109-5",
-    "./js/ui.js": "./js/ui.js?v=20261109-5",
-    "./js/app.js": "./js/app.js?v=20261109-5"
+    "./js/config.js": "./js/config.js?v=20261109-6",
+    "./js/util.js": "./js/util.js?v=20261109-6",
+    "./js/icons.js": "./js/icons.js?v=20261109-6",
+    "./js/adapter-local.js": "./js/adapter-local.js?v=20261109-6",
+    "./js/adapter-firebase.js": "./js/adapter-firebase.js?v=20261109-6",
+    "./js/store.js": "./js/store.js?v=20261109-6",
+    "./js/media.js": "./js/media.js?v=20261109-6",
+    "./js/editor.js": "./js/editor.js?v=20261109-6",
+    "./js/draw.js": "./js/draw.js?v=20261109-6",
+    "./js/ui.js": "./js/ui.js?v=20261109-6",
+    "./js/app.js": "./js/app.js?v=20261109-6"
   }
 }
 </script>
@@ -54,9 +54,16 @@
     </main>
     <nav class="pager is-off" id="pager" aria-label="換頁">
       <span class="pager-count" id="pager-count"></span>
-      <button type="button" class="btn" id="btn-prev">上一頁</button>
-      <span class="pager-num" id="pager-num">1 / 1</span>
-      <button type="button" class="btn" id="btn-next">下一頁</button>
+      <div class="pager-nav">
+        <button type="button" class="btn" id="btn-first">最上頁</button>
+        <button type="button" class="btn" id="btn-prev">上一頁</button>
+        <form class="pager-jump" id="pager-jump" novalidate title="輸入頁數後按 Enter 跳過去">
+          <input type="text" id="page-input" class="page-input" inputmode="numeric" enterkeyhint="go" autocomplete="off" maxlength="5" value="1" aria-label="跳到第幾頁">
+          <span class="pager-total">/ <span id="pager-total">1</span></span>
+        </form>
+        <button type="button" class="btn" id="btn-next">下一頁</button>
+        <button type="button" class="btn" id="btn-last">最下頁</button>
+      </div>
       <label class="pager-sort" for="sort-select"><span>排序</span><select id="sort-select"></select></label>
     </nav>
   </div>
@@ -66,6 +73,6 @@
   </nav>
 </div>
 <noscript><div class="noscript">這個網站需要開啟 JavaScript 才能使用。</div></noscript>
-<script type="module" src="js/app.js?v=20261109-5"></script>
+<script type="module" src="js/app.js?v=20261109-6"></script>
 </body>
 </html>

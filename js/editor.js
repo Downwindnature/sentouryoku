@@ -309,6 +309,11 @@ const closestMedia = node => {
   return el && el.closest ? el.closest('span.m') : null;
 };
 
+/** 這個節點裡有沒有文字或媒體（只有換行、空白的不算） */
+const hasContent = n => (n.nodeType === 3
+  ? /[^\s​]/.test(n.data)
+  : n.nodeType === 1 && n.nodeName !== 'BR' && (n.matches('span.m, hr') || !!n.querySelector('span.m, hr') || /[^\s​]/.test(n.textContent)));
+
 // 以「字數」記錄游標位置（媒體與換行各算 1），復原時用
 function measure(root, container, offset) {
   const r = document.createRange();
@@ -437,8 +442,7 @@ export class RichEditor {
       'aria-multiline': 'true', 'aria-label': '內容', 'data-placeholder': o.placeholder || '在這裡輸入內容'
     });
     this.mbar = this.buildMediaBar();
-    this.dropLine = h('div', { class: 'ed-dropline', hidden: true });
-    this.scroller = h('div', { class: 'ed-scroll' }, this.area, this.mbar, this.dropLine);
+    this.scroller = h('div', { class: 'ed-scroll' }, this.area, this.mbar);
     this.fileImage = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true });
     this.fileVideo = h('input', { type: 'file', accept: 'video/mp4,video/webm,video/quicktime,.mp4,.m4v,.webm,.mov', multiple: true, hidden: true });
     this.toolbar = this.buildToolbar();
@@ -898,8 +902,11 @@ export class RichEditor {
   }
 
   // ---------- 拖曳移動媒體 ----------
-  // 三種開始方式：按住工具列的 ✥、滑鼠直接拖圖片、手指長按圖片。
-  // 手指拖曳時，放置位置算在指尖上方一點，紅線才不會被手指擋住。
+  // 三種開始方式：按住媒體工具列的 ✥、滑鼠直接按住圖片拖、手指長按圖片。
+  // 拖曳時圖片本身跟著移動，直接停在放開後的位置（文字跟著重排），看到的就是放開後的樣子：
+  //   左右：靠近左邊 → 靠左繞圖、中間 → 置中、靠近右邊 → 靠右繞圖（「跟文字同一行」的維持同一行）
+  //   上下：移到那一行；拖到內容最後面再往下，會自動補空白行，所以空白的地方也放得上去
+  // 每次算位置前都先把圖片拿開，位置只由滑鼠／手指決定，不會因為圖片自己移動而跳來跳去。
 
   /** 按住媒體工具列的 ✥ */
   startMove(e) {
@@ -915,7 +922,9 @@ export class RichEditor {
       btn.removeEventListener('pointermove', move);
       btn.removeEventListener('pointerup', up);
       btn.removeEventListener('pointercancel', up);
-      this.dragEnd(ev.type === 'pointerup');
+      const ok = ev.type === 'pointerup';
+      if (ok) this.dragMove(ev.clientX, ev.clientY);
+      this.dragEnd(ok);
     };
     btn.addEventListener('pointermove', move);
     btn.addEventListener('pointerup', up);
@@ -932,7 +941,7 @@ export class RichEditor {
       if (!started) {
         if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
         started = true;
-        this.dragBegin(m, ev.clientX, ev.clientY, false);
+        this.dragBegin(m, sx, sy, false); // 從按下的那一點起算，圖片才會剛好跟著滑鼠
       }
       this.dragMove(ev.clientX, ev.clientY);
     };
@@ -941,7 +950,11 @@ export class RichEditor {
       document.removeEventListener('pointermove', move);
       document.removeEventListener('pointerup', up);
       document.removeEventListener('pointercancel', up);
-      if (started) { this.suppressClick(); this.dragEnd(ev.type === 'pointerup'); }
+      if (!started) return;
+      const ok = ev.type === 'pointerup';
+      this.suppressClick();
+      if (ok) this.dragMove(ev.clientX, ev.clientY);
+      this.dragEnd(ok);
     };
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
@@ -953,7 +966,8 @@ export class RichEditor {
     if (e.touches.length > 1) { this.cancelLongPress(); if (this.drag) this.dragEnd(false); return; }
     const t = e.changedTouches[0];
     const m = closestMedia(e.target);
-    if (!t || !m || !this.area.contains(m) || (e.target.closest && e.target.closest('.m-handle, .m-play, video'))) return;
+    // 「播放影片」按鈕上也可以長按拖曳（點一下還是播放）
+    if (!t || !m || !this.area.contains(m) || (e.target.closest && e.target.closest('.m-handle'))) return;
     this.cancelLongPress();
     const lp = { id: t.identifier, x: t.clientX, y: t.clientY, m };
     lp.timer = setTimeout(() => {
@@ -986,6 +1000,8 @@ export class RichEditor {
     if (d && d.touchId != null && ids.includes(d.touchId)) {
       if (e.cancelable) e.preventDefault(); // 放開後不要再觸發點擊、叫出鍵盤
       this.suppressClick();
+      const t = [...e.changedTouches].find(x => x.identifier === d.touchId);
+      if (ok && t) this.dragMove(t.clientX, t.clientY);
       this.dragEnd(ok);
     }
   }
@@ -1008,107 +1024,303 @@ export class RichEditor {
 
   dragBegin(m, x, y, touch, touchId = null) {
     if (this.drag) this.dragEnd(false);
+    if (!m.isConnected || !this.area.contains(m)) return;
     this.history.flush();
+    this.closePop();
     if (this.selMedia !== m) this.selectMedia(m);
+    const a = this.area, sc = this.scroller;
+    const ar = a.getBoundingClientRect(), mr = m.getBoundingClientRect();
+    const fl0 = FLOATS.find(f => m.classList.contains(f)) || 'f-left';
+    // 原本的位置（取消時放回去）。圖片自己佔一行時，那一行跟著圖片搬走
+    const orig = { parent: m.parentNode, next: m.nextSibling, block: null, blockParent: null, blockNext: null };
+    const from = m.parentNode;
+    if (from && from !== a && /^(P|DIV)$/.test(from.nodeName) && ![...from.childNodes].some(n => n !== m && hasContent(n))) {
+      Object.assign(orig, { block: from, blockParent: from.parentNode, blockNext: from.nextSibling });
+    }
+    const d = this.drag = {
+      m, touch, touchId, x, y, fl0, orig, temps: [], free: false, moved: false, need: false, raf: 0, ghost: null,
+      side: fl0 === 'f-right' ? 'right' : (fl0 === 'f-center' ? 'center' : 'left'),
+      p0: { x: x - ar.left, y: y - ar.top },
+      r0: { l: mr.left - ar.left, t: mr.top - ar.top, w: mr.width, h: mr.height }
+    };
+    // 一行空白行的高度（拖到內容後面時，用來補空白行）
+    const probe = h('p', null, h('br'));
+    a.append(probe);
+    d.lineH = probe.getBoundingClientRect().height || 27;
+    d.step = d.lineH + (parseFloat(getComputedStyle(probe).marginBottom) || 0);
+    probe.remove();
+    d.centerGap = (parseFloat(getComputedStyle(a).fontSize) || 15) * 0.6; // 置中圖片上方的間距
     m.classList.add('moving');
     this.mbar.classList.add('ghost');
-    this.area.classList.add('dragging');
-    const pic = m.querySelector('img');
-    const ghost = h('div', { class: 'ed-ghost' + (pic && pic.src ? '' : ' no-img'), 'aria-hidden': 'true' },
-      pic && pic.src ? h('img', { src: pic.src, alt: '' }) : h('span', { html: icon(m.dataset.type === 'video' ? 'video' : 'image') }));
-    this.el.append(ghost);
-    this.drag = { m, x, y, touch, touchId, ghost, target: null, raf: 0 };
-    this.dragMove(x, y);
-    // 拖到編輯區上下邊緣時自動捲動（手指不動也會繼續捲）
+    a.classList.add('dragging');
+    sc.classList.add('dragging');
+    // 下面多留一些空間可以放；拖曳中編輯區只長不縮，捲動位置才不會被拉回去
+    a.style.paddingBottom = Math.round(Math.max(120, sc.clientHeight * 0.6)) + 'px';
+    a.style.minHeight = a.offsetHeight + 'px';
+    if (touch) {
+      // 手指會擋住圖片，在指尖上方顯示一張小縮圖
+      const pic = m.querySelector('img');
+      d.ghost = h('div', { class: 'ed-ghost' + (pic && pic.src ? '' : ' no-img'), 'aria-hidden': 'true' },
+        pic && pic.src ? h('img', { src: pic.src, alt: '' }) : h('span', { html: icon(m.dataset.type === 'video' ? 'video' : 'image') }));
+      this.el.append(d.ghost);
+      this.placeGhost();
+    }
+    this._dragKey = ev => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); this.dragEnd(false); } };
+    window.addEventListener('keydown', this._dragKey, true);
+    this.retarget();
     const loop = () => {
-      const d = this.drag;
-      if (!d) return;
-      const sc = this.scroller, sr = sc.getBoundingClientRect();
-      const vv = window.visualViewport;
-      const top = Math.max(sr.top, vv ? vv.offsetTop : 0);
-      const bottom = Math.min(sr.bottom, vv ? vv.offsetTop + vv.height : window.innerHeight);
-      const py = this.dragPointY();
-      const zone = 48;
-      let dy = 0;
-      if (py < top + zone) dy = -(top + zone - py) / 3;
-      else if (py > bottom - zone) dy = (py - (bottom - zone)) / 3;
-      if (dy) {
-        const before = sc.scrollTop;
-        sc.scrollTop += clamp(Math.round(dy), -18, 18) || Math.sign(dy);
-        if (sc.scrollTop !== before) this.dragTarget();
-      }
+      if (this.drag !== d) return;
+      this.autoScroll(d);
+      if (d.need) { d.need = false; this.retarget(); }
       d.raf = requestAnimationFrame(loop);
     };
-    this.drag.raf = requestAnimationFrame(loop);
-  }
-
-  /** 計算放置位置用的 y：手指時往上偏一點，避開指尖 */
-  dragPointY() {
-    const d = this.drag;
-    return d.touch ? d.y - 30 : d.y;
+    d.raf = requestAnimationFrame(loop);
   }
 
   dragMove(x, y) {
     const d = this.drag;
     if (!d) return;
-    d.x = x; d.y = y;
-    const g = d.ghost;
-    const gw = g.offsetWidth || 88, gh = g.offsetHeight || 60;
-    const vw = document.documentElement.clientWidth;
-    g.style.left = clamp(x - gw / 2, 4, Math.max(4, vw - gw - 4)) + 'px';
-    g.style.top = (d.touch ? Math.max(4, y - gh - 64) : y + 18) + 'px';
-    this.dragTarget();
+    d.x = x; d.y = y; d.need = true;
+    if (d.ghost) this.placeGhost();
   }
 
-  dragTarget() {
+  placeGhost() {
+    const d = this.drag, g = d.ghost;
+    const gw = g.offsetWidth || 88, gh = g.offsetHeight || 60;
+    const vw = document.documentElement.clientWidth;
+    g.style.left = clamp(d.x - gw / 2, 4, Math.max(4, vw - gw - 4)) + 'px';
+    g.style.top = Math.max(4, d.y - gh - 64) + 'px';
+  }
+
+  /** 編輯區目前看得到的範圍（扣掉手機鍵盤） */
+  visibleRect() {
+    const r = this.scroller.getBoundingClientRect();
+    const vv = window.visualViewport;
+    return {
+      left: r.left, right: r.right,
+      top: Math.max(r.top, vv ? vv.offsetTop : 0),
+      bottom: Math.min(r.bottom, vv ? vv.offsetTop + vv.height : window.innerHeight)
+    };
+  }
+
+  /** 拖到編輯區上下邊緣時自動捲動（停著不動也會繼續捲） */
+  autoScroll(d) {
+    const sc = this.scroller, vr = this.visibleRect();
+    const zone = d.touch ? 56 : 44;
+    let dy = 0;
+    if (d.y < vr.top + zone) dy = -(vr.top + zone - d.y) / 3;
+    else if (d.y > vr.bottom - zone) dy = (d.y - (vr.bottom - zone)) / 3;
+    if (!dy) return;
+    // 往下最多捲到內容最後面再多半個畫面，不會一直捲、一直補空白行
+    if (dy > 0 && d.flowEnd != null && sc.scrollTop + sc.clientHeight >= d.flowEnd + sc.clientHeight * 0.5) return;
+    const before = sc.scrollTop;
+    sc.scrollTop += clamp(Math.round(dy), -18, 18) || Math.sign(dy);
+    if (sc.scrollTop !== before) d.need = true;
+  }
+
+  /** 重新決定圖片的位置：先拿開 → 算位置 → 放進去 */
+  retarget() {
     const d = this.drag;
     if (!d) return;
-    const sc = this.scroller, sr = sc.getBoundingClientRect();
-    const px = clamp(d.x, sr.left + 2, sr.right - 2);
-    const py = this.dragPointY();
-    const r = py >= sr.top && py <= sr.bottom ? caretFromPoint(px, py) : null;
-    if (r && this.area.contains(r.startContainer) && !d.m.contains(r.startContainer) && !closestMedia(r.startContainer)) {
-      d.target = r;
-      const rect = caretRect(r);
-      if (rect) {
-        Object.assign(this.dropLine.style, {
-          left: (rect.x - sr.left + sc.scrollLeft - 1) + 'px',
-          top: (rect.y - sr.top + sc.scrollTop) + 'px',
-          height: rect.h + 'px'
-        });
-        this.dropLine.hidden = false;
+    this.dragDetach();
+    this.dragApply(this.dragCompute());
+    const a = this.area, hgt = a.offsetHeight;
+    if (hgt > (parseFloat(a.style.minHeight) || 0)) a.style.minHeight = hgt + 'px';
+  }
+
+  /** 把圖片和拖曳中補上的空白行先拿掉 */
+  dragDetach() {
+    const d = this.drag, m = d.m;
+    if (m.parentNode) {
+      const prev = m.previousSibling, next = m.nextSibling;
+      const atOrig = m.parentNode === d.orig.parent && next === d.orig.next;
+      m.remove();
+      // 插入時切開的文字接回去（原本的位置不動，取消時才放得回去）
+      if (!atOrig && prev && next && prev.nodeType === 3 && next.nodeType === 3) { prev.appendData(next.data); next.remove(); }
+    }
+    for (const n of d.temps) n.remove();
+    d.temps = [];
+    if (d.orig.block && d.orig.block.isConnected) d.orig.block.remove();
+  }
+
+  /** 依照滑鼠／手指的位置，算出圖片要放哪裡（這時圖片已經拿開） */
+  dragCompute() {
+    const d = this.drag, a = this.area;
+    const ar = a.getBoundingClientRect(), cs = getComputedStyle(a);
+    const cl = parseFloat(cs.paddingLeft) || 0;
+    const cr = a.clientWidth - (parseFloat(cs.paddingRight) || 0);
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    // 圖片跟著滑鼠／手指平移之後的位置
+    const dx = d.x - ar.left - d.p0.x, dy = d.y - ar.top - d.p0.y;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) d.moved = true;
+    const E = { l: d.r0.l + dx, t: d.r0.t + dy, w: d.r0.w, h: d.r0.h };
+    // 左右：吸到最近的位置（靠左／置中／靠右）。橫向移動一點之後才開始判斷，一按下去不會馬上變
+    if (!d.free && Math.abs(dx) >= 16) d.free = true;
+    if (d.free) {
+      const cand = { left: cl, center: cl + (cr - cl - E.w) / 2, right: cr - E.w };
+      const v = Object.values(cand);
+      if (Math.max(...v) - Math.min(...v) >= 4) {
+        d.side = Object.keys(cand).reduce((b, k) => (Math.abs(E.l - cand[k]) < Math.abs(E.l - cand[b]) ? k : b), 'left');
+      }
+    }
+    const inline = d.fl0 === 'f-inline';
+    const fl = inline ? 'f-inline' : ({ left: 'f-left', center: 'f-center', right: 'f-right' })[d.side];
+    const base = { fl, align: d.side };
+    // 上下：看圖片上緣在哪一行（圖片撐高那一行時，那一行的上緣就是圖片上緣）
+    const nextTop = this.flowEnd(ar, padTop);
+    d.flowEnd = nextTop;
+    if (E.t >= nextTop - d.step / 2) {
+      // 在內容最後一行的下面：補空白行，放在那個高度
+      return { ...base, kind: 'end', n: clamp(Math.round((E.t - nextTop) / d.step), 0, 40) };
+    }
+    if (fl === 'f-center') {
+      // 置中的圖片自成一段：放在最近的段落前面或後面
+      const r = this.lineCaret(ar, E.t + d.lineH / 2, (cl + cr) / 2, cl, cr);
+      const B = r && this.topBlock(r);
+      if (B) {
+        const br = this.nodeRect(B);
+        const top = E.t - d.centerGap;
+        const before = Math.abs(top - (br.top - ar.top)) <= Math.abs(top - (br.bottom - ar.top + br.mb));
+        return { ...base, kind: before ? 'before' : 'after', block: B };
       }
     } else {
-      d.target = null;
-      this.dropLine.hidden = true;
+      // 跟文字同一行：插在圖片左邊緣對到的字旁邊（小圖看它的中間在哪一行）；繞圖：插在那一行的開頭
+      const r = inline
+        ? this.lineCaret(ar, E.t + Math.min(E.h, d.lineH) / 2, E.l + 2, cl, cr)
+        : this.lineCaret(ar, E.t + d.lineH / 2, cl + 2, cl, cr);
+      if (r) return { ...base, kind: 'caret', range: r };
+    }
+    // 找不到文字位置（例如那一行整排都是圖片）：放在那一段後面
+    const vr = this.visibleRect();
+    const el = document.elementFromPoint(clamp(ar.left + (cl + cr) / 2, vr.left + 2, vr.right - 2), clamp(ar.top + E.t, vr.top + 2, vr.bottom - 2));
+    let B = el && a.contains(el) && el !== a ? el : null;
+    while (B && B.parentNode !== a) B = B.parentNode;
+    return B ? { ...base, kind: 'after', block: B } : { ...base, kind: 'end', n: 0 };
+  }
+
+  /** 內容最後一行的下緣（不算繞圖的圖片）＝新的一行會開始的位置 */
+  flowEnd(ar, padTop) {
+    for (let n = this.area.lastChild; n; n = n.previousSibling) {
+      if (n.nodeType === 3 ? !/[^\s​]/.test(n.data) : n.nodeType !== 1) continue;
+      const r = this.nodeRect(n);
+      if (r.empty) continue;
+      return Math.max(padTop, r.bottom - ar.top + r.mb);
+    }
+    return padTop;
+  }
+
+  nodeRect(n) {
+    let r;
+    if (n.nodeType === 1) r = n.getBoundingClientRect();
+    else { const rg = document.createRange(); rg.selectNodeContents(n); r = rg.getBoundingClientRect(); }
+    const mb = n.nodeType === 1 ? (parseFloat(getComputedStyle(n).marginBottom) || 0) : 0;
+    return { top: r.top, bottom: r.bottom, mb, empty: !r.width && !r.height && !r.top && !r.left };
+  }
+
+  /** 位置所在的最外層段落 */
+  topBlock(r) {
+    const a = this.area;
+    let n = r.startContainer;
+    if (n === a) return a.childNodes[r.startOffset] || a.childNodes[r.startOffset - 1] || null;
+    while (n && n.parentNode !== a) n = n.parentNode;
+    return n;
+  }
+
+  /** 在某一行找一個可以放圖片的文字位置（遇到其他圖片就往旁邊找） */
+  lineCaret(ar, yArea, xArea, cl, cr) {
+    const vr = this.visibleRect();
+    const cx = v => clamp(v, vr.left + 2, vr.right - 2);
+    const y = clamp(ar.top + yArea, vr.top + 2, vr.bottom - 2);
+    const xs = [xArea, cl + 2, (cl + cr) / 2, cr - 2].map(v => cx(ar.left + v));
+    const tried = [];
+    for (let i = 0; i < xs.length && tried.length < 10; i++) {
+      const x = xs[i];
+      if (tried.some(t => Math.abs(t - x) < 2)) continue;
+      tried.push(x);
+      const r = caretFromPoint(x, y);
+      if (!r || !this.area.contains(r.startContainer)) continue;
+      const mm = closestMedia(r.startContainer);
+      if (mm) { const b = mm.getBoundingClientRect(); xs.splice(i + 1, 0, cx(b.right + 3), cx(b.left - 3)); continue; }
+      return r;
+    }
+    return null;
+  }
+
+  /** 把圖片放到算好的位置（需要的話先補空白行、包成一個段落） */
+  dragApply(t) {
+    const d = this.drag, m = d.m, a = this.area;
+    for (const f of FLOATS) m.classList.remove(f);
+    m.classList.add(t.fl);
+    const wrap = () => { const p = h('p'); p.append(m); d.temps.push(p); return p; };
+    if (t.kind === 'caret') {
+      if (t.range.startContainer === a) t.range.insertNode(wrap());
+      else t.range.insertNode(m);
+    } else if (t.kind === 'before') t.block.before(wrap());
+    else if (t.kind === 'after') t.block.after(wrap());
+    else {
+      for (let i = 0; i < t.n; i++) { const b = h('p', null, h('br')); d.temps.push(b); a.append(b); }
+      const p = wrap();
+      if (t.fl === 'f-inline' && t.align !== 'left') p.style.textAlign = t.align;
+      a.append(p);
     }
   }
 
   dragEnd(commit) {
     const d = this.drag;
     if (!d) return;
+    if (commit && !this.destroyed) this.retarget(); // 以放開的那一點為準
     this.drag = null;
     cancelAnimationFrame(d.raf);
-    d.ghost.remove();
-    const m = d.m;
+    window.removeEventListener('keydown', this._dragKey, true);
+    if (d.ghost) d.ghost.remove();
+    const m = d.m, a = this.area;
     m.classList.remove('moving');
     this.mbar.classList.remove('ghost');
-    this.area.classList.remove('dragging');
-    this.dropLine.hidden = true;
-    if (commit && d.target && m.isConnected && !this.destroyed) {
-      const from = m.parentNode;
-      const t = d.target;
-      if (t.startContainer === this.area) { const p = h('p'); t.insertNode(p); p.append(m); }
-      else t.insertNode(m);
-      // 圖片搬走後，原本只放它的空段落一起拿掉
-      if (from && from !== this.area && from.isConnected && /^(P|DIV)$/.test(from.nodeName) &&
-          !from.textContent.trim() && !from.querySelector('span.m, br, hr')) from.remove();
-      this.ensureBlock();
-      this.selectMedia(m);
-      this.changed();
-    } else if (!this.destroyed) {
-      this.placeMediaBar();
+    a.classList.remove('dragging');
+    this.scroller.classList.remove('dragging');
+    if (this.destroyed) return;
+    const keep = commit && d.moved;
+    if (!keep) this.dragRestore(d); // 取消，或按下去沒有移動：放回原處
+    a.style.paddingBottom = '';
+    a.style.minHeight = '';
+    a.normalize();
+    this.ensureBlock();
+    this.selectMedia(m);
+    if (!keep) return;
+    // 圖片往上移之後，內容最後面留下的空白行一起清掉
+    for (let n = a.lastChild; n && n !== m && !n.contains(m);) {
+      const prev = n.previousSibling;
+      const blank = n.nodeType === 3 ? !/[^\s​]/.test(n.data)
+        : n.nodeType === 1 && /^(P|DIV)$/.test(n.nodeName) && ![...n.childNodes].some(hasContent);
+      if (!blank) break;
+      n.remove();
+      n = prev;
     }
+    if (!d.touch && document.activeElement === a) this.caretAfter(m);
+    this.changed();
+  }
+
+  /** 取消拖曳：拿掉補上的空白行，圖片放回原處 */
+  dragRestore(d) {
+    const m = d.m, o = d.orig;
+    m.remove();
+    for (const n of d.temps) n.remove();
+    d.temps = [];
+    if (o.block && !o.block.isConnected && o.blockParent) {
+      o.blockParent.insertBefore(o.block, o.blockNext && o.blockNext.parentNode === o.blockParent ? o.blockNext : null);
+    }
+    if (o.parent) o.parent.insertBefore(m, o.next && o.next.parentNode === o.parent ? o.next : null);
+    for (const f of FLOATS) m.classList.remove(f);
+    m.classList.add(d.fl0);
+  }
+
+  caretAfter(m) {
+    const r = document.createRange();
+    r.setStartAfter(m);
+    r.collapse(true);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
   }
 
   removeMedia(m) {
@@ -1196,7 +1408,11 @@ export class RichEditor {
       // 滑鼠／觸控筆直接拖圖片（手指改用長按，見 onTouchStart）
       if (e.pointerType === 'touch' || e.button !== 0) return;
       const m = closestMedia(e.target);
-      if (m && a.contains(m) && !(e.target.closest && e.target.closest('.m-play, video'))) this.pressMedia(e, m);
+      if (!m || !a.contains(m)) return;
+      // 影片下方的播放控制列留給影片自己用（「播放影片」按鈕可以拖，點一下還是播放）
+      const v = e.target.closest && e.target.closest('video');
+      if (v && e.clientY > v.getBoundingClientRect().bottom - 48) return;
+      this.pressMedia(e, m);
     });
     // 手指點圖片：只選取圖片，不要把游標放進去叫出鍵盤
     a.addEventListener('mousedown', e => {
@@ -1222,6 +1438,7 @@ export class RichEditor {
       // 編輯區只能上下捲；萬一被瀏覽器橫向捲走就拉回來
       if (this.scroller.scrollLeft) this.scroller.scrollLeft = 0;
       if (this.pop) this.closePop();
+      if (this.drag) this.drag.need = true; // 拖曳中捲動：圖片跟著重新定位
     });
     const tb = this.toolbar;
     const tbHint = () => {
@@ -1239,6 +1456,7 @@ export class RichEditor {
   }
 
   onKeyDown(e) {
+    if (this.drag) { e.preventDefault(); return; } // 拖曳中不接受打字（Esc 可以取消拖曳）
     const mod = e.ctrlKey || e.metaKey;
     const k = (e.key || '').toLowerCase();
     if (mod && !e.altKey && k === 'z') { e.preventDefault(); if (e.shiftKey) this.history.redo(); else this.history.undo(); return; }

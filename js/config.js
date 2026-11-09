@@ -24,5 +24,6 @@ export const settings = {
   historyLimit: 50,        // 每筆名單最多保留幾筆過往紀錄（0 = 不限制）
   imageMaxSide: 1600,      // 圖片長邊上限（像素），超過會自動縮小壓縮
   gifMaxMB: 8,             // GIF 檔案大小上限（MB）
-  videoMaxMB: 20           // 影片檔案大小上限（MB）
+  videoMaxMB: 20,          // 影片檔案大小上限（MB）
+  avatarMaxMB: 5           // GIF／MP4 動態頭像的大小上限（MB）；名單每次被打開都會下載，小一點比較省流量
 };
